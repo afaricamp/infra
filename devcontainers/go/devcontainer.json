@@ -1,0 +1,30 @@
+{
+  "name": "go-dev-jailed",
+  "image": "localhost/devcontainer-go:latest",
+
+  // Endurecimiento del contenedor (mismo espíritu que la jaula de Claude).
+  // Si JetBrains ignora algún arg, verifícalo con: podman inspect <contenedor>
+  "runArgs": [
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--pids-limit=2048",
+    "--memory=16g",
+    "--memory-swap=16g",
+    // Mapeo de UID rootless: dentro eres 1000 (dueño del home de la imagen),
+    // en el host los ficheros salen con TU usuario. Si da problemas de
+    // arranque o de propiedad, ajusta o elimina esta línea.
+    "--userns=keep-id:uid=1000,gid=1000"
+  ],
+
+  "remoteUser": "dev",
+
+  // El código del proyecto se monta aquí dentro.
+  "workspaceFolder": "/home/dev/project",
+
+  "containerEnv": {
+    "TMPDIR": "/home/dev/tmp"
+  },
+
+  // Crea el TMPDIR y valida el toolchain al construir el entorno.
+  "onCreateCommand": "mkdir -p /home/dev/tmp && go version"
+}

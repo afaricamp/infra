@@ -1,0 +1,36 @@
+# =============================================================================
+# Dev container para Go usado como backend de GoLand (JetBrains Remote Dev).
+# El backend del IDE se instala aquí en tiempo de ejecución; esta imagen solo
+# aporta el toolchain y lo mínimo que JetBrains necesita.
+#
+# Construir con tu UID para que los ficheros del workspace salgan con TU
+# propiedad en el host:
+#   podman build --build-arg USER_ID=$(id -u) --build-arg GROUP_ID=$(id -g) \
+#     -t localhost/devcontainer-go:latest .
+# =============================================================================
+FROM docker.io/library/golang:1.24-bookworm
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+
+# JetBrains necesita: glibc (viene en bookworm), git, curl, tar, procps.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    tar \
+    procps \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Usuario no-root que coincide con tu UID de host.
+RUN groupadd -g ${GROUP_ID} dev 2>/dev/null || true && \
+    useradd -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash dev 2>/dev/null || true
+
+# Cachés de Go dentro del home del usuario (persisten vía volumen del dev container).
+ENV GOPATH="/home/dev/go"
+ENV GOCACHE="/home/dev/.cache/go-build"
+ENV PATH="/usr/local/go/bin:/home/dev/go/bin:${PATH}"
+
+USER dev
+WORKDIR /home/dev

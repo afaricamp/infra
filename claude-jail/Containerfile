@@ -1,0 +1,55 @@
+# =============================================================================
+# Contenedor endurecido para Claude Code (desarrollo en Go).
+#
+# IMPORTANTE sobre el UID:
+#   La imagen fija claudeuser = UID 1000. NO necesitas reconstruir aunque tu
+#   usuario del host no sea 1000: el script de lanzamiento usa
+#   'keep-id:uid=1000' para mapear tu UID de host -> 1000 dentro y de vuelta.
+#   Deja USER_ID/GROUP_ID en 1000 salvo que sepas lo que haces.
+# =============================================================================
+
+# 1. Imagen oficial de Go como fuente para copiar los binarios
+FROM golang:1.24-bookworm AS go-source
+
+# 2. Base Ubuntu
+FROM ubuntu:24.04
+
+# Copiamos Go desde la imagen fuente
+COPY --from=go-source /usr/local/go /usr/local/go
+
+# Variables de entorno para que 'go' esté siempre disponible
+ENV PATH="/usr/local/go/bin:/home/claudeuser/go/bin:${PATH}"
+ENV GOPATH="/home/claudeuser/go"
+ENV GOCACHE="/home/claudeuser/.cache/go-build"
+
+# Esenciales + toolchain de compilación para librerías CGO de Go
+RUN apt-get update && apt-get install -y \
+    git \
+    ca-certificates \
+    procps \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Usuario UID 1000 (ver nota de cabecera)
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+RUN userdel -f -r ubuntu || true && \
+    groupadd -g ${GROUP_ID} claude-group || true && \
+    useradd -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash claudeuser
+
+USER claudeuser
+WORKDIR /home/claudeuser
+
+# CORRECCIÓN 1 (bug): se añaden 'tmp' y '.config'.
+# El script exporta TMPDIR=/home/claudeuser/tmp; ese directorio ANTES no
+# existía y muchas herramientas (git, compiladores, temporales) fallaban.
+RUN mkdir -p .local/bin .claude project .cache/go-build go/bin tmp .config
+
+# Inyectamos el binario de Claude
+COPY --chown=claudeuser:claude-group claude-bin .local/bin/claude
+RUN chmod +x .local/bin/claude
+
+ENV PATH="/home/claudeuser/.local/bin:${PATH}"
+WORKDIR /home/claudeuser/project
+
+ENTRYPOINT ["claude"]

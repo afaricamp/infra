@@ -1,0 +1,26 @@
+{
+  "name": "php-dev-jailed",
+  "image": "localhost/devcontainer-php:latest",
+
+  "runArgs": [
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--pids-limit=2048",
+    "--memory=8g",
+    "--memory-swap=8g",
+    "--userns=keep-id:uid=1000,gid=1000"
+  ],
+
+  "remoteUser": "dev",
+  "workspaceFolder": "/home/dev/project",
+
+  "containerEnv": {
+    "TMPDIR": "/home/dev/tmp"
+  },
+
+  // AVISO de seguridad: 'composer install' ejecuta los scripts de composer.json.
+  // NO lo pongas en onCreateCommand de forma automática para proyectos que no
+  // controlas. Ejecútalo tú a conciencia dentro del contenedor cuando confíes
+  // en el proyecto. Aquí solo creamos el TMPDIR y validamos versiones.
+  "onCreateCommand": "mkdir -p /home/dev/tmp && php --version && composer --version"
+}
