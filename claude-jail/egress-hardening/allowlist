@@ -1,4 +1,5 @@
-# Dominios permitidos para el contenedor de Claude. Regex POSIX extendida.
-# Cubre API, autenticación y telemetría de Anthropic. Todo lo demás se deniega.
+# Domains allowed for the Claude container. POSIX extended regex.
+# Covers Anthropic's API, authentication and telemetry. Everything else is denied.
 (^|\.)anthropic\.com$
 (^|\.)claude\.ai$
+(^|\.)claude\.com$

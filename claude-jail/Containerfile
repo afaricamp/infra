@@ -1,28 +1,28 @@
 # =============================================================================
-# Contenedor endurecido para Claude Code (desarrollo en Go).
+# Hardened container for Claude Code (Go development).
 #
-# IMPORTANTE sobre el UID:
-#   La imagen fija claudeuser = UID 1000. NO necesitas reconstruir aunque tu
-#   usuario del host no sea 1000: el script de lanzamiento usa
-#   'keep-id:uid=1000' para mapear tu UID de host -> 1000 dentro y de vuelta.
-#   Deja USER_ID/GROUP_ID en 1000 salvo que sepas lo que haces.
+# IMPORTANT note about the UID:
+#   The image pins claudeuser = UID 1000. You do NOT need to rebuild even if
+#   your host user is not 1000: the launcher uses 'keep-id:uid=1000' to map
+#   your host UID -> 1000 inside and back again.
+#   Leave USER_ID/GROUP_ID at 1000 unless you know what you are doing.
 # =============================================================================
 
-# 1. Imagen oficial de Go como fuente para copiar los binarios
+# 1. Official Go image, used only as a source to copy the toolchain from
 FROM golang:1.24-bookworm AS go-source
 
-# 2. Base Ubuntu
+# 2. Ubuntu base
 FROM ubuntu:24.04
 
-# Copiamos Go desde la imagen fuente
+# Copy Go across from the source image
 COPY --from=go-source /usr/local/go /usr/local/go
 
-# Variables de entorno para que 'go' esté siempre disponible
+# Environment so that 'go' is always on PATH
 ENV PATH="/usr/local/go/bin:/home/claudeuser/go/bin:${PATH}"
 ENV GOPATH="/home/claudeuser/go"
 ENV GOCACHE="/home/claudeuser/.cache/go-build"
 
-# Esenciales + toolchain de compilación para librerías CGO de Go
+# Essentials + build toolchain for Go packages that need CGO
 RUN apt-get update && apt-get install -y \
     git \
     ca-certificates \
@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Usuario UID 1000 (ver nota de cabecera)
+# UID 1000 user (see the header note)
 ARG USER_ID=1000
 ARG GROUP_ID=1000
 RUN userdel -f -r ubuntu || true && \
@@ -40,12 +40,12 @@ RUN userdel -f -r ubuntu || true && \
 USER claudeuser
 WORKDIR /home/claudeuser
 
-# CORRECCIÓN 1 (bug): se añaden 'tmp' y '.config'.
-# El script exporta TMPDIR=/home/claudeuser/tmp; ese directorio ANTES no
-# existía y muchas herramientas (git, compiladores, temporales) fallaban.
+# 'tmp' and '.config' matter here: the launcher exports
+# TMPDIR=/home/claudeuser/tmp, and when that directory did not exist a lot of
+# tools (git, compilers, anything using temp files) failed.
 RUN mkdir -p .local/bin .claude project .cache/go-build go/bin tmp .config
 
-# Inyectamos el binario de Claude
+# Inject the Claude binary
 COPY --chown=claudeuser:claude-group claude-bin .local/bin/claude
 RUN chmod +x .local/bin/claude
 

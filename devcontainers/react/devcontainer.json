@@ -1,0 +1,41 @@
+{
+  "name": "react-dev-jailed",
+  "image": "localhost/devcontainer-react:latest",
+
+  // Container hardening. FOWNER and CHOWN are required for the JetBrains
+  // Gateway worker (chmod/chown while deploying its backend); with
+  // --userns=keep-id they only apply within your subuid range.
+  "runArgs": [
+    "--cap-drop=ALL",
+    "--cap-add=FOWNER",
+    "--cap-add=CHOWN",
+    "--security-opt=no-new-privileges",
+    // Node tooling (Vite, webpack, jest, tsc) forks aggressively, so the pid
+    // ceiling is higher here than for the Go/PHP containers.
+    "--pids-limit=4096",
+    "--memory=8g",
+    "--memory-swap=8g",
+    "--userns=keep-id:uid=1000,gid=1000"
+  ],
+
+  "remoteUser": "dev",
+  "workspaceFolder": "/home/dev/project",
+
+  "containerEnv": {
+    "TMPDIR": "/home/dev/tmp"
+  },
+
+  // Dev server ports: 5173 is Vite's default, 3000 covers Next.js and CRA.
+  // JetBrains Gateway's handling of forwardPorts over Podman is patchy; if a
+  // dev server is unreachable from the host, add an explicit "-p=5173:5173"
+  // to runArgs above and bind the server to 0.0.0.0 (Vite: --host).
+  "forwardPorts": [5173, 3000],
+
+  // SECURITY WARNING: 'npm install' executes the lifecycle scripts (preinstall,
+  // postinstall, prepare) of every package in the tree. Do NOT put it in
+  // onCreateCommand automatically for projects you do not control. Run it
+  // yourself, deliberately, inside the container once you trust the project.
+  // Here we only validate versions ('mkdir -p tmp' is already done in the
+  // image, but it is repeated so the command still works if TMPDIR is changed).
+  "onCreateCommand": "mkdir -p /home/dev/tmp && node --version && npm --version"
+}

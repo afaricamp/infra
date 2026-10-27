@@ -1,0 +1,59 @@
+# =============================================================================
+# React/Node dev container, used as the WebStorm backend (JetBrains Remote Dev).
+# The IDE backend installs itself here at runtime; this image only provides the
+# toolchain and the bare minimum JetBrains needs.
+#
+# Change the Node tag (24 -> 26, etc.) as needed. Use the full bookworm image,
+# not -slim or -alpine: the JetBrains backend needs glibc, and the full image
+# already carries build-essential via buildpack-deps (node-gyp needs it).
+#
+# Build it with your UID so workspace files come out owned by YOU on the host:
+#   podman build --build-arg USER_ID=$(id -u) --build-arg GROUP_ID=$(id -g) \
+#     -t localhost/devcontainer-react:latest .
+# =============================================================================
+FROM docker.io/library/node:24-bookworm
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+
+# JetBrains needs: glibc (bookworm has it), git, curl, tar, procps.
+# python3 is for node-gyp, which native modules (sharp, better-sqlite3, ...)
+# shell out to; the compilers themselves come with buildpack-deps.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    tar \
+    procps \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# pnpm and yarn via corepack (ships with Node). Done as root so the shims land
+# in /usr/local/bin; the container then runs unprivileged.
+RUN corepack enable
+
+# IMPORTANT, and the reason this file differs from the Go/PHP ones: the official
+# node image ALREADY ships a 'node' user at UID 1000. Creating 'dev' at the
+# usual host UID of 1000 would collide, so remove 'node' first. Same approach
+# claude-jail/Containerfile takes with Ubuntu's 'ubuntu' user.
+# useradd is deliberately NOT followed by '|| true': if it fails, 'USER dev'
+# below would produce an image that cannot start, and failing the build is far
+# easier to diagnose than that.
+RUN userdel -f -r node 2>/dev/null || true; \
+    groupdel node 2>/dev/null || true; \
+    groupadd -g ${GROUP_ID} dev 2>/dev/null || true; \
+    useradd -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash dev
+
+# Global npm installs go in the user's home so 'npm i -g' works unprivileged
+# (the container runs with --cap-drop=ALL as a non-root user).
+ENV NPM_CONFIG_PREFIX="/home/dev/.npm-global"
+ENV PATH="/home/dev/.npm-global/bin:${PATH}"
+
+# npm/pnpm caches inside the home directory (persisted via the dev container
+# volume), and the TMPDIR the devcontainer.json points at.
+ENV NPM_CONFIG_CACHE="/home/dev/.npm"
+
+USER dev
+RUN mkdir -p /home/dev/.npm-global /home/dev/.npm /home/dev/tmp
+
+WORKDIR /home/dev

@@ -2,8 +2,13 @@
   "name": "php-dev-jailed",
   "image": "localhost/devcontainer-php:latest",
 
+  // Container hardening. FOWNER and CHOWN are required for the JetBrains
+  // Gateway worker (chmod/chown while deploying its backend); with
+  // --userns=keep-id they only apply within your subuid range.
   "runArgs": [
     "--cap-drop=ALL",
+    "--cap-add=FOWNER",
+    "--cap-add=CHOWN",
     "--security-opt=no-new-privileges",
     "--pids-limit=2048",
     "--memory=8g",
@@ -18,9 +23,9 @@
     "TMPDIR": "/home/dev/tmp"
   },
 
-  // AVISO de seguridad: 'composer install' ejecuta los scripts de composer.json.
-  // NO lo pongas en onCreateCommand de forma automática para proyectos que no
-  // controlas. Ejecútalo tú a conciencia dentro del contenedor cuando confíes
-  // en el proyecto. Aquí solo creamos el TMPDIR y validamos versiones.
+  // SECURITY WARNING: 'composer install' executes the scripts declared in
+  // composer.json. Do NOT put it in onCreateCommand automatically for projects
+  // you do not control. Run it yourself, deliberately, inside the container
+  // once you trust the project. Here we only create TMPDIR and check versions.
   "onCreateCommand": "mkdir -p /home/dev/tmp && php --version && composer --version"
 }

@@ -2,29 +2,35 @@
   "name": "go-dev-jailed",
   "image": "localhost/devcontainer-go:latest",
 
-  // Endurecimiento del contenedor (mismo espíritu que la jaula de Claude).
-  // Si JetBrains ignora algún arg, verifícalo con: podman inspect <contenedor>
+  // Container hardening. Slightly less strict than the Claude jail: FOWNER and
+  // CHOWN are required for the JetBrains Gateway worker to chmod/chown while
+  // deploying its backend. With --userns=keep-id those capabilities only apply
+  // INSIDE the user namespace (your subuid range), so the real blast radius is
+  // still limited to your own files.
+  // If JetBrains ignores an arg, check with: podman inspect <container>
   "runArgs": [
     "--cap-drop=ALL",
+    "--cap-add=FOWNER",
+    "--cap-add=CHOWN",
     "--security-opt=no-new-privileges",
     "--pids-limit=2048",
     "--memory=16g",
     "--memory-swap=16g",
-    // Mapeo de UID rootless: dentro eres 1000 (dueño del home de la imagen),
-    // en el host los ficheros salen con TU usuario. Si da problemas de
-    // arranque o de propiedad, ajusta o elimina esta línea.
+    // Rootless UID mapping: inside you are 1000 (owner of the image's home),
+    // on the host files come out owned by YOU. If you hit startup or
+    // ownership problems, this is the first line to adjust or drop.
     "--userns=keep-id:uid=1000,gid=1000"
   ],
 
   "remoteUser": "dev",
 
-  // El código del proyecto se monta aquí dentro.
+  // The project source is mounted here inside the container.
   "workspaceFolder": "/home/dev/project",
 
   "containerEnv": {
     "TMPDIR": "/home/dev/tmp"
   },
 
-  // Crea el TMPDIR y valida el toolchain al construir el entorno.
+  // Create TMPDIR and validate the toolchain when the environment is built.
   "onCreateCommand": "mkdir -p /home/dev/tmp && go version"
 }

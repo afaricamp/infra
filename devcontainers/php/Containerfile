@@ -1,8 +1,8 @@
 # =============================================================================
-# Dev container para PHP usado como backend de PhpStorm (JetBrains Remote Dev).
-# Incluye Composer. Cambia el tag de PHP (8.4 -> 8.5, etc.) según necesites.
+# PHP dev container, used as the PhpStorm backend (JetBrains Remote Dev).
+# Includes Composer. Change the PHP tag (8.4 -> 8.5, etc.) as needed.
 #
-# Construir con tu UID:
+# Build it with your UID:
 #   podman build --build-arg USER_ID=$(id -u) --build-arg GROUP_ID=$(id -g) \
 #     -t localhost/devcontainer-php:latest .
 # =============================================================================
@@ -22,14 +22,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && docker-php-ext-install zip \
     && rm -rf /var/lib/apt/lists/*
 
-# Composer desde su imagen oficial (evita el script de instalación remoto).
+# Composer from its official image (avoids the remote installer script).
 COPY --from=docker.io/library/composer:2 /usr/bin/composer /usr/bin/composer
 
-# Usuario no-root que coincide con tu UID de host.
+# Non-root user matching your host UID.
 RUN groupadd -g ${GROUP_ID} dev 2>/dev/null || true && \
     useradd -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash dev 2>/dev/null || true
 
-# Caché de Composer dentro del home (persiste vía volumen del dev container).
+# Composer cache inside the home directory (persisted via the dev container volume).
 ENV COMPOSER_HOME="/home/dev/.composer"
 
 USER dev
