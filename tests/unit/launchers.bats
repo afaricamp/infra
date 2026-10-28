@@ -46,6 +46,31 @@ launch_jailed() { run bash -c 'cd "$1" && shift && "$@"' _ "${DIR:-$PROJ}" "$REP
   [ "$(run_args | tail -n 1)" = localhost/claude-jail:test ]
 }
 
+@test "claude-jail: mounts the devkit plugin read-only and loads it" {
+  launch
+  [ "$status" -eq 0 ]
+  local args; args="$(run_args)"
+  has_pair "$args" -v "$REPO/devkit:/opt/devkit:ro,z"
+  has_pair "$args" -e CLAUDE_CODE_PLUGIN_DIRS=/opt/devkit
+}
+
+@test "claude-jail: JAIL_PLUGIN_DIR picks another plugin, empty leaves it out" {
+  mkdir -p "$BATS_TEST_TMPDIR/other-plugin"
+  JAIL_PLUGIN_DIR="$BATS_TEST_TMPDIR/other-plugin" launch
+  has_pair "$(run_args)" -v "$BATS_TEST_TMPDIR/other-plugin:/opt/devkit:ro,z"
+
+  JAIL_PLUGIN_DIR= launch
+  [ "$status" -eq 0 ]
+  not grep -q 'CLAUDE_CODE_PLUGIN_DIRS\|/opt/devkit' <<<"$(run_args)"
+}
+
+@test "claude-jailed: mounts the devkit plugin too" {
+  export STUB_PROXY_RUNNING=true
+  launch_jailed
+  [ "$status" -eq 0 ]
+  has_pair "$(run_args)" -e CLAUDE_CODE_PLUGIN_DIRS=/opt/devkit
+}
+
 @test "claude-jail: refuses outside DEV_PROJECTS without starting anything" {
   DIR="$BATS_TEST_TMPDIR" launch
   [ "$status" -eq 1 ]

@@ -85,6 +85,7 @@ _newproj() {
   # Let the Makefile copy the template (single source of truth). It refuses
   # to overwrite an existing devcontainer.json unless FORCE=1.
   make -C "$DEV_INFRA" --no-print-directory devcontainer PROJECT="$d" TYPE="$type" || return 1
+  make -C "$DEV_INFRA" --no-print-directory ai-sessions PROJECT="$d" >/dev/null || return 1
 
   # git init only if this is not already a repo.
   if [ ! -d "$d/.git" ]; then

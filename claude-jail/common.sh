@@ -191,6 +191,24 @@ JAIL_FLAGS=(
   -v "${JAIL_VOLUMES[2]}":/home/claudeuser/.cache
 )
 
+# --- Shared skills: the devkit plugin, read-only ---
+# Loaded in every project as /devkit:<skill> (see devkit/README.md). A plugin
+# and not ~/.claude/skills because personal skills replace project skills of
+# the same name, and plugin skills are namespaced. Read-only so Claude cannot
+# edit the skills it runs with: an injection in one project must not be able
+# to plant instructions that load in every later session. Shared label (:z)
+# for the same reason as the project mount: several jails read it at once.
+# JAIL_PLUGIN_DIR= (empty) leaves it out.
+JAIL_PLUGIN_DIR="${JAIL_PLUGIN_DIR-$JAIL_INFRA/devkit}"
+if [ -n "$JAIL_PLUGIN_DIR" ] && [ -d "$JAIL_PLUGIN_DIR" ]; then
+  # The comma belongs to the mount options (ro,z).
+  # shellcheck disable=SC2054
+  JAIL_FLAGS+=(
+    -v "$JAIL_PLUGIN_DIR":/opt/devkit:ro,z
+    -e CLAUDE_CODE_PLUGIN_DIRS=/opt/devkit
+  )
+fi
+
 # Each launcher runs jail_guard, jail_check_volumes and jail_project_flags,
 # then passes "${JAIL_FLAGS[@]}" "${JAIL_PROJECT_FLAGS[@]}" to podman run,
 # followed by the image and the launcher's own arguments (handed to claude).

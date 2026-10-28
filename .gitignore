@@ -14,3 +14,11 @@ claude-jail/egress-hardening/allowlist.effective
 # Claude Code local settings (machine-specific; shared settings would be
 # .claude/settings.json, which is not ignored)
 .claude/settings.local.json
+
+# devkit eval runs (claude plugin eval, skill-creator)
+devkit/evals/results/
+*-workspace/
+
+# Local AI session notes (see .ai-sessions/README.md)
+.ai-sessions/*
+!.ai-sessions/README.md

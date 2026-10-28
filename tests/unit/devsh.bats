@@ -64,6 +64,8 @@ in_zsh() {
   [ "$output" = "$DEV_PROJECTS/my-ui" ]
   cmp "$REPO/devcontainers/react/devcontainer.json" "$DEV_PROJECTS/my-ui/.devcontainer/devcontainer.json"
   [ -d "$DEV_PROJECTS/my-ui/.git" ]
+  cmp "$REPO/devkit/templates/ai-sessions/README.md" "$DEV_PROJECTS/my-ui/.ai-sessions/README.md"
+  grep -qxF '.ai-sessions/*' "$DEV_PROJECTS/my-ui/.gitignore"
 }
 
 @test "newproj: keeps an existing git repo" {

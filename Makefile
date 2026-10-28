@@ -20,6 +20,8 @@ override FORCE   := $(value FORCE)
 
 CLAUDE_JAIL   := $(CURDIR)/claude-jail
 DEVCONTAINERS := $(CURDIR)/devcontainers
+# Same file the devkit skills use when a project has no .ai-sessions/ yet.
+AI_SESSIONS_TEMPLATE := $(CURDIR)/devkit/templates/ai-sessions/README.md
 UBUNTU        := docker.io/library/ubuntu:24.04
 # Linux or Darwin. On macOS podman is a client for the podman machine VM.
 OS            := $(shell uname -s)
@@ -81,7 +83,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
         build build-claude build-go build-php build-react egress egress-dev \
-        aliases devcontainer fix-volumes verify lint clean-images \
+        aliases devcontainer ai-sessions fix-volumes verify lint clean-images \
         test test-static test-unit test-integration test-all
 
 help: ## Show this help
@@ -224,6 +226,28 @@ devcontainer: ## Copy a devcontainer into a project. Usage: make devcontainer PR
 	 mkdir -p "$$project/.devcontainer"; \
 	 cp "$(DEVCONTAINERS)/$$type/devcontainer.json" "$$project/.devcontainer/devcontainer.json"; \
 	 echo "OK: '$$type' devcontainer copied to $$project/.devcontainer/devcontainer.json"
+
+# Local notes for AI sessions: the README is committed, everything else in the
+# folder is gitignored. Safe to run again: an existing README is kept unless
+# FORCE=1, and the .gitignore lines are only added once.
+ai-sessions: ## Add .ai-sessions/ to a project. Usage: make ai-sessions PROJECT=/path [FORCE=1]
+	@project=$(call shquote,PROJECT); force=$(call shquote,FORCE); \
+	 if [ -z "$$project" ]; then echo "ERROR: PROJECT missing. Usage: make ai-sessions PROJECT=/path"; exit 1; fi; \
+	 case "$$project" in "~"/*) project="$$HOME/$${project#\~/}";; esac; \
+	 if [ ! -d "$$project" ]; then echo "ERROR: $$project is not a directory"; exit 1; fi; \
+	 mkdir -p "$$project/.ai-sessions"; \
+	 if [ -e "$$project/.ai-sessions/README.md" ] && [ "$$force" != "1" ]; then \
+	   echo "OK: $$project/.ai-sessions/README.md already exists, kept (FORCE=1 replaces it)"; \
+	 else \
+	   cp "$(AI_SESSIONS_TEMPLATE)" "$$project/.ai-sessions/README.md"; \
+	   echo "OK: .ai-sessions/README.md copied to $$project"; \
+	 fi; \
+	 gi="$$project/.gitignore"; \
+	 if ! grep -qxF '.ai-sessions/*' "$$gi" 2>/dev/null; then \
+	   if [ -s "$$gi" ] && [ -n "$$(tail -c 1 "$$gi")" ]; then echo >> "$$gi"; fi; \
+	   printf '%s\n' '# Local AI session notes (see .ai-sessions/README.md)' '.ai-sessions/*' '!.ai-sessions/README.md' >> "$$gi"; \
+	   echo "OK: .ai-sessions/ ignored in $$gi (except its README)"; \
+	 fi
 
 # Runs chown as root of the jail's user namespace (keep-id, so UID 1000 inside
 # is you on the host) and remounts with ':z', which relabels the volumes with

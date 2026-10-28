@@ -67,6 +67,10 @@ for f in devcontainers/*/devcontainer.json; do
   fi
 done
 
+# The devkit plugin follows devkit/README.md: names, descriptions, no fields
+# that run things without a prompt, links that resolve, enough eval cases.
+python3 tests/lib/skills.py devkit || fail=1
+
 # Every Makefile target the README table mentions exists.
 while IFS= read -r t; do
   check "README's 'make $t' exists in the Makefile" grep -qE "^$t:" Makefile

@@ -74,6 +74,45 @@ setup() {
   [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
 }
 
+# --- ai-sessions -------------------------------------------------------------------
+
+@test "ai-sessions: PROJECT is required and must exist" {
+  run make_repo ai-sessions
+  [ "$status" -ne 0 ]
+  contains "$output" "PROJECT missing"
+
+  run make_repo ai-sessions PROJECT="$P"
+  [ "$status" -ne 0 ]
+  contains "$output" "is not a directory"
+}
+
+@test "ai-sessions: copies the template and ignores everything else in the folder" {
+  mkdir -p "$P"
+  run make_repo ai-sessions PROJECT="$P"
+  [ "$status" -eq 0 ]
+  cmp "$REPO/devkit/templates/ai-sessions/README.md" "$P/.ai-sessions/README.md"
+  git -C "$P" init -q
+  git -C "$P" check-ignore -q .ai-sessions/ABC-1-x.md
+  git -C "$P" check-ignore -q .ai-sessions/ABC-1/requests.http
+  not git -C "$P" check-ignore -q .ai-sessions/README.md
+}
+
+@test "ai-sessions: safe to run again, keeps an edited README unless FORCE=1" {
+  mkdir -p "$P"
+  printf 'node_modules/' > "$P/.gitignore"   # no trailing newline
+  make_repo ai-sessions PROJECT="$P" >/dev/null
+  echo "local edit" >> "$P/.ai-sessions/README.md"
+  run make_repo ai-sessions PROJECT="$P"
+  [ "$status" -eq 0 ]
+  contains "$output" "kept"
+  grep -q "local edit" "$P/.ai-sessions/README.md"
+  [ "$(grep -cxF '.ai-sessions/*' "$P/.gitignore")" -eq 1 ]
+  grep -qxF 'node_modules/' "$P/.gitignore"
+
+  make_repo ai-sessions PROJECT="$P" FORCE=1 >/dev/null
+  cmp "$REPO/devkit/templates/ai-sessions/README.md" "$P/.ai-sessions/README.md"
+}
+
 # --- build ---------------------------------------------------------------------------
 
 @test "build-*: dev container images do not get the host UID (they pin 1000 for keep-id)" {

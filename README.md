@@ -29,6 +29,10 @@ Infrastructure for running **Claude Code** and the **JetBrains IDEs** (GoLand, P
 │       ├── allowlist-dev       # opt-in: Go modules, GitHub, npm
 │       ├── setup-egress.sh
 │       └── launch_claude_jailed.sh
+├── devkit/                     # Claude Code plugin with the shared skills (see "Skills")
+│   ├── .claude-plugin/plugin.json
+│   ├── skills/<name>/SKILL.md
+│   └── evals/<skill>/<case>/
 ├── devcontainers/
 │   ├── go/{Containerfile, devcontainer.json}
 │   ├── php/{Containerfile, devcontainer.json}
@@ -75,6 +79,7 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make egress-dev` | Same, but also allowing Go modules, GitHub and npm |
 | `make aliases` | Copy `dev.sh` and hook it into `~/.bashrc` |
 | `make devcontainer PROJECT=<path> TYPE=go\|php\|react` | Copy the `devcontainer.json` into the given project (`FORCE=1` to overwrite an existing one) |
+| `make ai-sessions PROJECT=<path>` | Add `.ai-sessions/` (local AI session notes, gitignored except its README) to a project. `newproj-*` does it for you; `FORCE=1` replaces the README with the current template |
 | `make fix-volumes` | Repair ownership and SELinux labels of the Claude volumes (see [Troubleshooting](#troubleshooting)) |
 | `make verify` | Check binary, images, socket, aliases, egress and DNS leaks |
 | `make lint` | shellcheck + hadolint, run in containers |
@@ -135,6 +140,19 @@ The React container raises `--pids-limit` to 4096, because Node tooling (Vite, w
 
 If a dev server is not reachable from the host, the cause is almost always one of two things: Gateway's `forwardPorts` handling over Podman is patchy (add an explicit `"-p=5173:5173"` to `runArgs`), or the dev server is bound to `127.0.0.1` inside the container and needs `--host` (Vite) to listen on `0.0.0.0`.
 
+## Skills
+
+Both launchers mount [`devkit/`](devkit/README.md) read-only into the jail and load it as a plugin (`CLAUDE_CODE_PLUGIN_DIRS`), so every project gets the same skills as `/devkit:<skill>`:
+
+- **Workflow**, run by hand only: `/devkit:starting-features`, `/devkit:committing-changes`, `/devkit:creating-tickets`. `tracking-sessions` keeps each task's notes in the project's `.ai-sessions/` (gitignored except its README), so a new chat can resume where the last one stopped. `newproj-*` creates that folder; `make ai-sessions PROJECT=<path>` adds it to an existing project. This repository has its own [.ai-sessions/](.ai-sessions/README.md) for work on infra.
+- **Conventions** for Go, PHP, React, Containerfiles, shell scripts, GitHub Actions and Kubernetes manifests. They load on their own when Claude works on matching files.
+- **Writing**: `writing-naturally` (plain, specific prose without AI writing patterns, used for PR descriptions, tickets and docs) and `detecting-ai-text`, both in English and Spanish.
+- **Tasks** that use them: `implementing-endpoints`, `building-components`, `writing-tests`, `finding-test-gaps`, `reviewing-code`, `writing-documentation`, `hardening-security` (threat model, checklist and fixes proven by tests) and `optimizing-performance` (measure, profile, prove the gain). `reviewing-code` uses both for its security and performance passes. For a full security scan of a codebase, Anthropic's `claude-security` plugin is the better tool; install it inside the jail with `/plugin install claude-security@claude-plugins-official` (needs `claude-jail`, not the strict proxy).
+
+They are defaults. Each skill tells Claude to follow the project's own `CLAUDE.md`, guidelines and linter config first, and a project skill with the same name keeps its bare `/name`, because plugin skills are namespaced.
+
+The mount is read-only so Claude cannot change the skills it runs with: an injection in one project cannot plant instructions that load in every later session. Edit them on the host; the next jail picks them up. `JAIL_PLUGIN_DIR=<dir>` loads another plugin directory, `JAIL_PLUGIN_DIR=` none. How to write or change a skill, and how to run its evals: [devkit/README.md](devkit/README.md).
+
 ## Updating Claude
 
 ```bash
@@ -163,7 +181,7 @@ Three levels, from cheap to thorough. CI runs all of them on every push (`.githu
 
 | Level | Command | Needs | What it covers |
 |---|---|---|---|
-| 1. Static | `make test-static` | podman (or `ENGINE=docker`), python3 | shellcheck, hadolint, and repo policies: fully qualified base images, every `devcontainer.json` parses and keeps its hardening flags and installs nothing automatically, every `make` target the README lists exists |
+| 1. Static | `make test-static` | podman (or `ENGINE=docker`), python3 | shellcheck, hadolint, and repo policies: fully qualified base images, every `devcontainer.json` parses and keeps its hardening flags and installs nothing automatically, every `make` target the README lists exists, the devkit skills follow `devkit/README.md` |
 | 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers, `setup-egress.sh`, the Makefile targets (`devcontainer`, `aliases`, `verify`, `fix-volumes`) and `dev.sh` |
 | 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits, read-only host-executed paths, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak) and each dev container run with its own `devcontainer.json` |
 
