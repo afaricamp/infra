@@ -1,0 +1,10 @@
+{
+  "name": "devkit",
+  "version": "0.1.0",
+  "description": "Default workflow and best-practice skills for Go, PHP, React and infrastructure work, for projects that run in the Claude jail",
+  "author": {
+    "name": "afaricamp"
+  },
+  "license": "MIT",
+  "keywords": ["go", "php", "react", "containers", "kubernetes", "github-actions", "testing"]
+}

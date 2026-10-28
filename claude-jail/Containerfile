@@ -9,10 +9,10 @@
 # =============================================================================
 
 # 1. Official Go image, used only as a source to copy the toolchain from
-FROM golang:1.24-bookworm AS go-source
+FROM docker.io/library/golang:1.27-bookworm AS go-source
 
 # 2. Ubuntu base
-FROM ubuntu:24.04
+FROM docker.io/library/ubuntu:24.04
 
 # Copy Go across from the source image
 COPY --from=go-source /usr/local/go /usr/local/go
@@ -22,8 +22,16 @@ ENV PATH="/usr/local/go/bin:/home/claudeuser/go/bin:${PATH}"
 ENV GOPATH="/home/claudeuser/go"
 ENV GOCACHE="/home/claudeuser/.cache/go-build"
 
+# The binary is baked into the image and updated with 'make update-claude';
+# an in-container update would be thrown away by --rm anyway.
+ENV DISABLE_AUTOUPDATER=1
+# Keep ~/.claude.json (account and onboarding state) next to the credentials,
+# inside the persistent 'claude-home' volume. Without this it lives in the
+# image layer and is lost on every run.
+ENV CLAUDE_CONFIG_DIR="/home/claudeuser/.claude"
+
 # Essentials + build toolchain for Go packages that need CGO
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ca-certificates \
     procps \
@@ -35,7 +43,7 @@ ARG USER_ID=1000
 ARG GROUP_ID=1000
 RUN userdel -f -r ubuntu || true && \
     groupadd -g ${GROUP_ID} claude-group || true && \
-    useradd -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash claudeuser
+    useradd -l -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash claudeuser
 
 USER claudeuser
 WORKDIR /home/claudeuser

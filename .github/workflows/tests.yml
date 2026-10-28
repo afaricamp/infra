@@ -1,0 +1,79 @@
+# Runs the three test levels (see README, "Tests").
+#   static, unit       fast; every push and pull request
+#   unit-macos         the unit tests with the tools a Mac ships
+#   integration-*      real rootless podman on the runner; after the fast ones
+# SELinux is not available on GitHub's Ubuntu runners: the SELinux tests skip
+# themselves here and only run on an enforcing host ('make test-integration').
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: static (shellcheck, hadolint, policy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/ci/setup-rootless-podman.sh
+      - run: make test-static
+
+  unit:
+    name: unit (bats)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/ci/setup-rootless-podman.sh
+      # The container runner is the default path; this keeps it tested.
+      - run: make test-unit
+
+  unit-macos:
+    name: unit (macOS stock tools - bash 3.2, make 3.81, BSD, zsh)
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: brew install bats-core
+      # PATH without Homebrew, so the scripts and the Makefile run with what a
+      # Mac ships: /bin/bash 3.2, /usr/bin/make 3.81, BSD utilities, /bin/zsh.
+      # (GitHub's macOS runners cannot run a podman machine: no nested
+      # virtualisation, so the macOS integration tests run on a real Mac.)
+      - run: env PATH=/usr/bin:/bin:/usr/sbin:/sbin "$(command -v bats)" tests/unit
+      - run: env PATH=/usr/bin:/bin:/usr/sbin:/sbin tests/static/policy.sh
+
+  integration-jail:
+    name: integration (jail, volumes, egress)
+    needs: [static, unit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/ci/setup-rootless-podman.sh
+      - run: make test-integration TESTS="tests/integration/jail.bats tests/integration/volumes.bats tests/integration/egress.bats"
+
+  integration-devcontainers:
+    name: integration (devcontainer ${{ matrix.type }})
+    needs: [static, unit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        type: [go, php, react]
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/ci/setup-rootless-podman.sh
+      - run: make test-integration TESTS=tests/integration/devcontainers.bats
+        env:
+          DC_TYPES_UNDER_TEST: ${{ matrix.type }}

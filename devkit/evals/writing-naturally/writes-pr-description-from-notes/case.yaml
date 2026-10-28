@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: writes-pr-description-from-notes
+expected_outcome: |
+  The writing-naturally skill is used. The result is a PR description in GitHub Markdown
+  that keeps every fact from the notes (SHOP-1395, one MGET instead of up to 9 calls,
+  p95 180 ms → 45 ms on staging over 500 requests, OrderSummaryReader, Redis fallback
+  covered by OrderSummaryReaderTest, no contract change, no migration), adds no invented
+  facts, and avoids the AI patterns listed in the skill.
