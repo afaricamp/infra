@@ -7,6 +7,12 @@
 #   STUB_VOLUMES        space-separated volumes that "exist"
 #   STUB_ROOT           where their fake mountpoints live
 #   STUB_PROXY_RUNNING  answer to 'container inspect -f {{.State.Running}}'
+#   STUB_PROXY_IP       answer to 'container inspect' for the proxy's address
+#                       (default 10.89.0.2; set it empty for "not attached")
+#   STUB_NETWORKS       space-separated networks that "exist"
+#   STUB_NET_DNS        answer to 'network inspect -f {{.DNSEnabled}}' (default false)
+#   STUB_NET_RM_FAIL    set to make 'network rm' fail (a container still uses it)
+#   STUB_LOG.removed    networks removed so far; they no longer "exist"
 #   STUB_IMAGE_EXISTS   exit status of 'image exists' (default 0)
 #   The volume check ('podman run ... --entrypoint stat ... /check/<vol>')
 #   is answered here and logged to STUB_LOG.check, not STUB_LOG.run:
@@ -31,11 +37,21 @@ case "$1 ${2:-}" in
     volume_exists "$last" ;;
   "container inspect")
     [ -n "${STUB_PROXY_RUNNING:-}" ] || exit 125
-    echo "$STUB_PROXY_RUNNING" ;;
+    case "$*" in
+      *IPAddress*) echo "${STUB_PROXY_IP-10.89.0.2}" ;;
+      *) echo "$STUB_PROXY_RUNNING" ;;
+    esac ;;
   "image exists")
     exit "${STUB_IMAGE_EXISTS:-0}" ;;
   "network exists")
+    grep -qxF -- "$last" "$log.removed" 2>/dev/null && exit 1
+    case " ${STUB_NETWORKS:-} " in *" $last "*) exit 0 ;; esac
     exit 1 ;;
+  "network inspect")
+    echo "${STUB_NET_DNS:-false}" ;;
+  "network rm")
+    [ -z "${STUB_NET_RM_FAIL:-}" ] || exit 2
+    [ "$log" = /dev/null ] || printf '%s\n' "$last" >> "$log.removed" ;;
   "network create"|"network connect"|build\ *)
     ;;
   run\ *)

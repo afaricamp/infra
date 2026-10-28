@@ -29,12 +29,23 @@ if [ "$(podman container inspect -f '{{.State.Running}}' "$JAIL_PROXY" 2>/dev/nu
     "Start it with 'podman start $JAIL_PROXY', or recreate it with 'make egress'."
 fi
 
+# The internal network has no DNS (see setup-egress.sh), so the jail finds the
+# proxy through /etc/hosts: its address on that network, read here.
+PROXY_IP="$(podman container inspect -f \
+  "{{with index .NetworkSettings.Networks \"$JAIL_NET_INTERNAL\"}}{{.IPAddress}}{{end}}" \
+  "$JAIL_PROXY" 2>/dev/null || true)"
+if [ -z "$PROXY_IP" ]; then
+  jail_die "the proxy '$JAIL_PROXY' is not attached to $JAIL_NET_INTERNAL." \
+    "Recreate it with 'make egress' (or 'make egress-dev')."
+fi
+
 PROXY_URL="http://$JAIL_PROXY:8888"
 
 # Arguments are handed to claude: 'claude-jailed --resume', 'claude-jailed -p ...'
 podman run --rm \
   "${JAIL_FLAGS[@]}" \
   --network "$JAIL_NET_INTERNAL" \
+  --add-host "$JAIL_PROXY:$PROXY_IP" \
   -e HTTPS_PROXY="$PROXY_URL" \
   -e HTTP_PROXY="$PROXY_URL" \
   -e https_proxy="$PROXY_URL" \

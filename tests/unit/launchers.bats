@@ -108,11 +108,20 @@ launch_jailed() { run bash -c 'cd "$1" && shift && "$@"' _ "${DIR:-$PROJ}" "$REP
   [ "$status" -eq 0 ]
   local args; args="$(run_args)"
   has_pair "$args" --network jail-internal
+  has_pair "$args" --add-host claude-proxy:10.89.0.2
   for v in HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; do
     has_pair "$args" -e "$v=http://claude-proxy:8888"
   done
   has_pair "$args" --cap-drop ALL
   [ "$(tail -n 1 <<<"$args")" = --resume ]
+}
+
+@test "claude-jailed: refuses when the proxy is not on the internal network" {
+  export STUB_PROXY_RUNNING=true STUB_PROXY_IP=
+  launch_jailed
+  [ "$status" -eq 1 ]
+  contains "$output" "not attached to jail-internal"
+  not podman_ran
 }
 
 @test "claude-jailed: proxy and network names follow the overrides" {
@@ -154,11 +163,11 @@ setup_egress_copy() {
   setup_egress_copy
   run "$EGRESS/setup-egress.sh"
   [ "$status" -eq 0 ]
-  grep -qx 'network create --internal jail-internal' "$STUB_LOG"
+  grep -qx 'network create --internal --disable-dns jail-internal' "$STUB_LOG"
   grep -qx 'network create jail-egress' "$STUB_LOG"
-  grep -qx 'network connect jail-egress claude-proxy' "$STUB_LOG"
+  grep -qx 'network connect jail-internal claude-proxy' "$STUB_LOG"
   local args; args="$(run_args)"
-  has_pair "$args" --network jail-internal
+  has_pair "$args" --network jail-egress
   has_pair "$args" --cap-drop ALL
   has_pair "$args" --security-opt no-new-privileges
   has_pair "$args" --memory 256m
@@ -169,8 +178,37 @@ setup_egress_copy() {
   export JAIL_PROXY=p1 JAIL_PROXY_IMAGE=img1 JAIL_NET_INTERNAL=n1 JAIL_NET_EGRESS=e1
   run "$EGRESS/setup-egress.sh"
   [ "$status" -eq 0 ]
-  grep -qx 'network create --internal n1' "$STUB_LOG"
-  grep -qx 'network connect e1 p1' "$STUB_LOG"
+  grep -qx 'network create --internal --disable-dns n1' "$STUB_LOG"
+  grep -qx 'network connect n1 p1' "$STUB_LOG"
   grep -q '^build -t img1 ' "$STUB_LOG"
   [ "$(run_args | tail -n 1)" = img1 ]
+}
+
+@test "setup-egress: recreates an internal network left with DNS on, removing the proxy first" {
+  setup_egress_copy
+  export STUB_NETWORKS="jail-internal jail-egress" STUB_NET_DNS=true
+  run "$EGRESS/setup-egress.sh"
+  [ "$status" -eq 0 ]
+  contains "$output" "recreating it without DNS"
+  [ "$(grep -nx 'rm -f claude-proxy' "$STUB_LOG" | cut -d: -f1)" -lt "$(grep -nx 'network rm jail-internal' "$STUB_LOG" | cut -d: -f1)" ]
+  grep -qx 'network create --internal --disable-dns jail-internal' "$STUB_LOG"
+  not grep -qx 'network create jail-egress' "$STUB_LOG"
+}
+
+@test "setup-egress: leaves an internal network without DNS alone" {
+  setup_egress_copy
+  export STUB_NETWORKS="jail-internal jail-egress" STUB_NET_DNS=false
+  run "$EGRESS/setup-egress.sh"
+  [ "$status" -eq 0 ]
+  not grep -q '^network rm' "$STUB_LOG"
+  not grep -q '^network create' "$STUB_LOG"
+}
+
+@test "setup-egress: stops when the old network is still in use" {
+  setup_egress_copy
+  export STUB_NETWORKS="jail-internal" STUB_NET_DNS=true STUB_NET_RM_FAIL=1
+  run "$EGRESS/setup-egress.sh"
+  [ "$status" -eq 1 ]
+  contains "$output" "jailed Claude still running"
+  not grep -q '^network create --internal' "$STUB_LOG"
 }
