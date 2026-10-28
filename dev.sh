@@ -1,29 +1,42 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2139  # aliases expand their paths when defined, on purpose
 # =============================================================================
 # dev.sh  —  aliases and functions for the hardened development environment.
 #
-# Not executed, sourced. Install it with 'make aliases', or by hand:
-#   mkdir -p ~/.config/shell && cp dev.sh ~/.config/shell/
-#   echo '[ -f ~/.config/shell/dev.sh ] && source ~/.config/shell/dev.sh' >> ~/.bashrc
-#   source ~/.bashrc
+# Not executed, sourced. Install it with 'make aliases' (copies it to
+# ~/.config/shell/ with the repo path baked in), or source it straight from
+# the repo:
+#   echo 'source /path/to/this/repo/dev.sh' >> ~/.bashrc
 #
 # PRINCIPLE: this is a convenience layer over the Makefile, not a second
 # implementation. Anything that builds or copies something delegates to 'make'
 # so there are never two code paths to drift apart.
 # =============================================================================
 
+# Works in bash and in zsh (the macOS default shell).
+#
 # Sourcing is the only correct use: if this gets executed instead, the aliases
-# would be defined in a subshell and silently lost.
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+# would be defined in a subshell and silently lost. Each shell has its own way
+# of telling, and of naming the file being sourced.
+if [ -n "${ZSH_VERSION:-}" ]; then
+  case "${ZSH_EVAL_CONTEXT:-}" in
+    *:file*) ;;
+    *) echo "dev.sh is sourced, not executed:  source $0" >&2; exit 1 ;;
+  esac
+  eval '_dev_self="${(%):-%x}"'   # zsh-only syntax, hidden from bash's parser
+elif [ "${BASH_SOURCE[0]}" = "$0" ]; then
   echo "dev.sh is sourced, not executed:  source ${BASH_SOURCE[0]}" >&2
   exit 1
+else
+  _dev_self="${BASH_SOURCE[0]}"
 fi
 
 # --- Base paths ---
 # DEV_ prefix so we stay out of the CLAUDE_* namespace, which belongs to the
 # tool (Claude Code reads several CLAUDE_* variables; no point in colliding).
-# Override DEV_INFRA if the repo does not live at ~/dev/infra.
-export DEV_INFRA="${DEV_INFRA:-$HOME/dev/infra}"
+# The copy installed by 'make aliases' sets both in its header. Sourced
+# straight from the repo, DEV_INFRA falls back to the repo itself.
+export DEV_INFRA="${DEV_INFRA:-$(dirname "$(readlink -f "$_dev_self")")}"
+unset _dev_self
 export DEV_PROJECTS="${DEV_PROJECTS:-$HOME/dev/projects}"
 export DEV_CLAUDE_JAIL="$DEV_INFRA/claude-jail"
 export DEV_DEVCONTAINERS="$DEV_INFRA/devcontainers"
@@ -44,32 +57,33 @@ alias dc-build='make -C "$DEV_INFRA" build-go build-php build-react'
 alias pods='podman ps -a'
 alias podvol='podman volume ls'
 alias podnet='podman network ls'
-alias podman-socket='systemctl --user status podman.socket'
-alias podman-socket-path='echo "$XDG_RUNTIME_DIR/podman/podman.sock"'
+if [ "$(uname -s)" = Darwin ]; then
+  # macOS: podman talks to the podman machine VM; Gateway uses its API socket.
+  alias podman-socket='podman machine inspect --format "{{.Name}}: {{.State}}, rootful={{.Rootful}}"'
+  alias podman-socket-path='podman machine inspect --format "{{.ConnectionInfo.PodmanSocket.Path}}"'
+else
+  alias podman-socket='systemctl --user status podman.socket'
+  alias podman-socket-path='echo "$XDG_RUNTIME_DIR/podman/podman.sock"'
+fi
 
 # --- New projects with their dev container already wired up ---
 # usage:  newproj-go my-service  |  newproj-php my-api  |  newproj-react my-ui
 # One helper; the wrappers only differ in the TYPE they pass to make.
 _newproj() {
   local type="$1" name="$2"
-  if [ -z "$name" ]; then
-    echo "usage: newproj-$type <name>" >&2
-    return 1
-  fi
+  # A plain name: no paths, no hidden directories.
+  case "$name" in
+    ''|*/*|.*)
+      echo "usage: newproj-$type <name>   (a plain directory name inside $DEV_PROJECTS)" >&2
+      return 1
+      ;;
+  esac
 
   local d="$DEV_PROJECTS/$name"
-
-  # Never clobber an existing devcontainer: it would be silent and would throw
-  # away whatever the project had customised.
-  if [ -e "$d/.devcontainer/devcontainer.json" ]; then
-    echo "ERROR: $d/.devcontainer/devcontainer.json already exists." >&2
-    echo "       To regenerate it deliberately: make -C \"\$DEV_INFRA\" devcontainer PROJECT=\"$d\" TYPE=$type" >&2
-    return 1
-  fi
-
   mkdir -p "$d" || return 1
 
-  # Let the Makefile copy the template (single source of truth).
+  # Let the Makefile copy the template (single source of truth). It refuses
+  # to overwrite an existing devcontainer.json unless FORCE=1.
   make -C "$DEV_INFRA" --no-print-directory devcontainer PROJECT="$d" TYPE="$type" || return 1
 
   # git init only if this is not already a repo.

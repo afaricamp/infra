@@ -1,0 +1,66 @@
+#!/bin/bash
+# Fake podman for the unit tests. Never touches containers: it logs what it
+# was asked to do and answers from environment variables.
+#
+#   STUB_LOG            every call appended as one line ("$*")
+#   STUB_LOG.run        the arguments of the last 'podman run', one per line
+#   STUB_VOLUMES        space-separated volumes that "exist"
+#   STUB_ROOT           where their fake mountpoints live
+#   STUB_PROXY_RUNNING  answer to 'container inspect -f {{.State.Running}}'
+#   STUB_IMAGE_EXISTS   exit status of 'image exists' (default 0)
+#   The volume check ('podman run ... --entrypoint stat ... /check/<vol>')
+#   is answered here and logged to STUB_LOG.check, not STUB_LOG.run:
+#   STUB_OWNER          owner of each volume inside the jail (default 1000, you)
+#   STUB_SELINUX_CTX    their SELinux context (default '?', no SELinux)
+#   STUB_UNREADABLE     volumes stat cannot read (Permission denied)
+#   STUB_CHECK_FAIL     set to make the check container fail to start
+log="${STUB_LOG:-/dev/null}"
+printf '%s\n' "$*" >> "$log"
+last="${*: -1}"
+
+volume_exists() {
+  case " ${STUB_VOLUMES:-} " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+case "$1 ${2:-}" in
+  "volume inspect")
+    volume_exists "$last" || exit 125
+    echo "${STUB_ROOT:-/nonexistent}/volumes/$last/_data" ;;
+  "volume exists")
+    volume_exists "$last" ;;
+  "container inspect")
+    [ -n "${STUB_PROXY_RUNNING:-}" ] || exit 125
+    echo "$STUB_PROXY_RUNNING" ;;
+  "image exists")
+    exit "${STUB_IMAGE_EXISTS:-0}" ;;
+  "network exists")
+    exit 1 ;;
+  "network create"|"network connect"|build\ *)
+    ;;
+  run\ *)
+    shift
+    case " $* " in
+      *" --entrypoint stat "*)
+        [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.check"
+        if [ -n "${STUB_CHECK_FAIL:-}" ]; then
+          echo "Error: localhost/claude-jail:latest: image not known"
+          exit 125
+        fi
+        status=0
+        for arg in "$@"; do
+          case "$arg" in
+            /check/*:*) ;;
+            /check/*)
+              case " ${STUB_UNREADABLE:-} " in
+                *" ${arg#/check/} "*) echo "stat: cannot statx '$arg': Permission denied"; status=1 ;;
+                *) echo "$arg ${STUB_OWNER:-1000} ${STUB_SELINUX_CTX:-?}" ;;
+              esac ;;
+          esac
+        done
+        exit "$status" ;;
+    esac
+    [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.run" ;;
+  *)
+    exit 1 ;;
+esac

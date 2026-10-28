@@ -19,6 +19,12 @@
   ],
 
   "remoteUser": "dev",
+  // The project, mounted with the SHARED SELinux label (relabel=shared, the
+  // equivalent of ':z'), the same one the Claude jail uses. A private label
+  // (':Z') on either side would cut the other container off while both are
+  // running. Not verified against every Gateway version: if the container
+  // will not start, remove "workspaceMount" and see the README (SELinux).
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/dev/project,type=bind,relabel=shared",
   "workspaceFolder": "/home/dev/project",
 
   "containerEnv": {

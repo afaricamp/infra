@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stand-in for the Claude binary in the integration tests, so the jail image
+# can be built without downloading the real one. It runs its arguments as a
+# command: 'launch_claude.sh id -u' runs 'id -u' inside the jail.
+if [ "${1:-}" = "--version" ]; then
+  echo "0.0.0 (claude-jail test stub)"
+  exit 0
+fi
+[ $# -gt 0 ] || { echo "claude-stub: no command given" >&2; exit 2; }
+exec "$@"

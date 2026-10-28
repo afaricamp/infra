@@ -3,11 +3,13 @@
 # The IDE backend installs itself here at runtime; this image only provides the
 # toolchain and the bare minimum JetBrains needs.
 #
-# Build it with your UID so workspace files come out owned by YOU on the host:
-#   podman build --build-arg USER_ID=$(id -u) --build-arg GROUP_ID=$(id -g) \
-#     -t localhost/devcontainer-go:latest .
+# The 'dev' user is pinned to UID/GID 1000, the same as the Claude jail: the
+# devcontainer.json maps your host user onto it with 'keep-id:uid=1000', so
+# workspace files come out owned by YOU on the host whatever your host UID is.
+# Do not build it with your own UID: the mapping would no longer line up.
+#   podman build -t localhost/devcontainer-go:latest .
 # =============================================================================
-FROM docker.io/library/golang:1.24-bookworm
+FROM docker.io/library/golang:1.27-bookworm
 
 ARG USER_ID=1000
 ARG GROUP_ID=1000
@@ -22,9 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user matching your host UID.
-RUN groupadd -g ${GROUP_ID} dev 2>/dev/null || true && \
-    useradd -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash dev 2>/dev/null || true
+# Non-root user at UID 1000 (see the header). useradd is deliberately NOT
+# followed by '|| true': if it fails, 'USER dev' below would produce an image
+# that cannot start, and failing the build is far easier to diagnose.
+RUN groupadd -g ${GROUP_ID} dev 2>/dev/null || true; \
+    useradd -l -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash dev
 
 # Go caches inside the user's home (persisted via the dev container volume).
 ENV GOPATH="/home/dev/go"
