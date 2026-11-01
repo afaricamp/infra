@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: php-n-plus-one
+context:
+  scaffold_script: setup.sh

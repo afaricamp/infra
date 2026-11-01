@@ -1,0 +1,25 @@
+# ADDITIONAL development allowlist. Unused unless you start the proxy with:
+#
+#   ALLOW_DEV=1 ./setup-egress.sh        (or: make egress-dev)
+#
+# Needed because the jail image ships the Go toolchain: without these domains
+# 'go mod download', 'git clone' and 'npm install' fail inside jailed mode.
+#
+# SECURITY TRADE-OFF: every domain here is a potential exfiltration route (a
+# gist, a repo you own, a published package). Only use it when you actually
+# need to build; the default mode (Anthropic only) is the safe one.
+#
+# POSIX extended regex, same as 'allowlist'.
+
+# Go modules and the checksum database
+(^|\.)proxy\.golang\.org$
+(^|\.)sum\.golang\.org$
+(^|\.)storage\.googleapis\.com$
+
+# Git / GitHub
+(^|\.)github\.com$
+(^|\.)githubusercontent\.com$
+(^|\.)codeload\.github\.com$
+
+# npm (Claude Code installs MCP servers via npx)
+(^|\.)registry\.npmjs\.org$

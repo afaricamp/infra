@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: fixes-script-injection
+context:
+  scaffold_script: setup.sh

@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: detection-request-does-not-trigger
+expected_outcome: |
+  The user asks only for an AI-writing verdict and explicitly says not to rewrite. The
+  writing-naturally skill is not used, and the answer gives a verdict with reasons
+  instead of a rewritten version of the RFC intro.

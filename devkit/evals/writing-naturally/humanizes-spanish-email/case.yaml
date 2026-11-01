@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: humanizes-spanish-email
+expected_outcome: |
+  The writing-naturally skill is used. The rewrite is a short plain-text email in Spanish
+  that keeps the facts (Monday 3 November, payment reminders, queue notifications-v2,
+  duplicates from about 4 % to 0.2 %, signed by Lucía), drops the AI phrases ("Espero que
+  este mensaje os encuentre bien", "no solo… sino que también", "cabe destacar",
+  "desempeña un papel crucial", "en definitiva", "marca un antes y un después") and adds
+  no new information.

@@ -1,0 +1,5 @@
+# Runner for the unit tests (tests/unit): bats plus the tools the Makefile and
+# the scripts under test expect. Built and used by 'make test-unit' when bats
+# is not installed on the host.
+FROM docker.io/bats/bats:1.11.1
+RUN apk add --no-cache make coreutils git python3 zsh

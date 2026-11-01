@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: rewrite-request-does-not-trigger
+expected_outcome: |
+  The user says the origin is already known and asks only for a rewrite. The
+  detecting-ai-text skill is not used and no verdict report is produced. The answer is a
+  rewritten commit message body that keeps the real facts (60 → 120 requests per minute,
+  RATE_LIMIT_CART_ITEMS, POST /v2/cart/items, SHOP-1411).

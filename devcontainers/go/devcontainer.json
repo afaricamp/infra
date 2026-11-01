@@ -1,0 +1,41 @@
+{
+  "name": "go-dev-jailed",
+  "image": "localhost/devcontainer-go:latest",
+
+  // Container hardening. Slightly less strict than the Claude jail: FOWNER and
+  // CHOWN are required for the JetBrains Gateway worker to chmod/chown while
+  // deploying its backend. With --userns=keep-id those capabilities only apply
+  // INSIDE the user namespace (your subuid range), so the real blast radius is
+  // still limited to your own files.
+  // If JetBrains ignores an arg, check with: podman inspect <container>
+  "runArgs": [
+    "--cap-drop=ALL",
+    "--cap-add=FOWNER",
+    "--cap-add=CHOWN",
+    "--security-opt=no-new-privileges",
+    "--pids-limit=2048",
+    "--memory=16g",
+    "--memory-swap=16g",
+    // Rootless UID mapping: inside you are 1000 (owner of the image's home),
+    // on the host files come out owned by YOU. If you hit startup or
+    // ownership problems, this is the first line to adjust or drop.
+    "--userns=keep-id:uid=1000,gid=1000"
+  ],
+
+  "remoteUser": "dev",
+
+  // The project, mounted with the SHARED SELinux label (relabel=shared, the
+  // equivalent of ':z'), the same one the Claude jail uses. A private label
+  // (':Z') on either side would cut the other container off while both are
+  // running. Not verified against every Gateway version: if the container
+  // will not start, remove "workspaceMount" and see the README (SELinux).
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/dev/project,type=bind,relabel=shared",
+  "workspaceFolder": "/home/dev/project",
+
+  "containerEnv": {
+    "TMPDIR": "/home/dev/tmp"
+  },
+
+  // Create TMPDIR and validate the toolchain when the environment is built.
+  "onCreateCommand": "mkdir -p /home/dev/tmp && go version"
+}

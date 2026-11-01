@@ -1,0 +1,82 @@
+#!/bin/bash
+# Fake podman for the unit tests. Never touches containers: it logs what it
+# was asked to do and answers from environment variables.
+#
+#   STUB_LOG            every call appended as one line ("$*")
+#   STUB_LOG.run        the arguments of the last 'podman run', one per line
+#   STUB_VOLUMES        space-separated volumes that "exist"
+#   STUB_ROOT           where their fake mountpoints live
+#   STUB_PROXY_RUNNING  answer to 'container inspect -f {{.State.Running}}'
+#   STUB_PROXY_IP       answer to 'container inspect' for the proxy's address
+#                       (default 10.89.0.2; set it empty for "not attached")
+#   STUB_NETWORKS       space-separated networks that "exist"
+#   STUB_NET_DNS        answer to 'network inspect -f {{.DNSEnabled}}' (default false)
+#   STUB_NET_RM_FAIL    set to make 'network rm' fail (a container still uses it)
+#   STUB_LOG.removed    networks removed so far; they no longer "exist"
+#   STUB_IMAGE_EXISTS   exit status of 'image exists' (default 0)
+#   The volume check ('podman run ... --entrypoint stat ... /check/<vol>')
+#   is answered here and logged to STUB_LOG.check, not STUB_LOG.run:
+#   STUB_OWNER          owner of each volume inside the jail (default 1000, you)
+#   STUB_SELINUX_CTX    their SELinux context (default '?', no SELinux)
+#   STUB_UNREADABLE     volumes stat cannot read (Permission denied)
+#   STUB_CHECK_FAIL     set to make the check container fail to start
+log="${STUB_LOG:-/dev/null}"
+printf '%s\n' "$*" >> "$log"
+last="${*: -1}"
+
+volume_exists() {
+  case " ${STUB_VOLUMES:-} " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+case "$1 ${2:-}" in
+  "volume inspect")
+    volume_exists "$last" || exit 125
+    echo "${STUB_ROOT:-/nonexistent}/volumes/$last/_data" ;;
+  "volume exists")
+    volume_exists "$last" ;;
+  "container inspect")
+    [ -n "${STUB_PROXY_RUNNING:-}" ] || exit 125
+    case "$*" in
+      *IPAddress*) echo "${STUB_PROXY_IP-10.89.0.2}" ;;
+      *) echo "$STUB_PROXY_RUNNING" ;;
+    esac ;;
+  "image exists")
+    exit "${STUB_IMAGE_EXISTS:-0}" ;;
+  "network exists")
+    grep -qxF -- "$last" "$log.removed" 2>/dev/null && exit 1
+    case " ${STUB_NETWORKS:-} " in *" $last "*) exit 0 ;; esac
+    exit 1 ;;
+  "network inspect")
+    echo "${STUB_NET_DNS:-false}" ;;
+  "network rm")
+    [ -z "${STUB_NET_RM_FAIL:-}" ] || exit 2
+    [ "$log" = /dev/null ] || printf '%s\n' "$last" >> "$log.removed" ;;
+  "network create"|"network connect"|build\ *)
+    ;;
+  run\ *)
+    shift
+    case " $* " in
+      *" --entrypoint stat "*)
+        [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.check"
+        if [ -n "${STUB_CHECK_FAIL:-}" ]; then
+          echo "Error: localhost/claude-jail:latest: image not known"
+          exit 125
+        fi
+        status=0
+        for arg in "$@"; do
+          case "$arg" in
+            /check/*:*) ;;
+            /check/*)
+              case " ${STUB_UNREADABLE:-} " in
+                *" ${arg#/check/} "*) echo "stat: cannot statx '$arg': Permission denied"; status=1 ;;
+                *) echo "$arg ${STUB_OWNER:-1000} ${STUB_SELINUX_CTX:-?}" ;;
+              esac ;;
+          esac
+        done
+        exit "$status" ;;
+    esac
+    [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.run" ;;
+  *)
+    exit 1 ;;
+esac

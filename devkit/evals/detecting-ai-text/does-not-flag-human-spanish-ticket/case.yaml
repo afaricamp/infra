@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: does-not-flag-human-spanish-ticket
+expected_outcome: |
+  The detecting-ai-text skill is used on a Spanish bug ticket that reads as written by a
+  person: concrete ticket numbers, release, endpoint, counts, class and method names, a
+  hedge ("creo que… no lo he confirmado") and an open question. The verdict is
+  "Inconclusive" or "Likely human", the answer lists those specifics as signs of human
+  writing, and it does not invent AI signs that are not in the text.

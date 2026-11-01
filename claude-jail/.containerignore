@@ -1,0 +1,5 @@
+# The jail build context only needs the Containerfile and claude-bin.
+# Nothing else has any business travelling to the build backend.
+egress-hardening/
+launch_claude.sh
+common.sh

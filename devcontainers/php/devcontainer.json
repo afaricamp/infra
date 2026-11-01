@@ -1,0 +1,37 @@
+{
+  "name": "php-dev-jailed",
+  "image": "localhost/devcontainer-php:latest",
+
+  // Container hardening. FOWNER and CHOWN are required for the JetBrains
+  // Gateway worker (chmod/chown while deploying its backend); with
+  // --userns=keep-id they only apply within your subuid range.
+  "runArgs": [
+    "--cap-drop=ALL",
+    "--cap-add=FOWNER",
+    "--cap-add=CHOWN",
+    "--security-opt=no-new-privileges",
+    "--pids-limit=2048",
+    "--memory=8g",
+    "--memory-swap=8g",
+    "--userns=keep-id:uid=1000,gid=1000"
+  ],
+
+  "remoteUser": "dev",
+  // The project, mounted with the SHARED SELinux label (relabel=shared, the
+  // equivalent of ':z'), the same one the Claude jail uses. A private label
+  // (':Z') on either side would cut the other container off while both are
+  // running. Not verified against every Gateway version: if the container
+  // will not start, remove "workspaceMount" and see the README (SELinux).
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/dev/project,type=bind,relabel=shared",
+  "workspaceFolder": "/home/dev/project",
+
+  "containerEnv": {
+    "TMPDIR": "/home/dev/tmp"
+  },
+
+  // SECURITY WARNING: 'composer install' executes the scripts declared in
+  // composer.json. Do NOT put it in onCreateCommand automatically for projects
+  // you do not control. Run it yourself, deliberately, inside the container
+  // once you trust the project. Here we only create TMPDIR and check versions.
+  "onCreateCommand": "mkdir -p /home/dev/tmp && php --version && composer --version"
+}

@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: flags-ai-written-pr-description
+expected_outcome: |
+  The detecting-ai-text skill is used. The answer gives a verdict of "Likely AI" or
+  "Very likely AI", backed by a table of signs with literal quotes from the PR
+  description (inflated significance, AI vocabulary, negative parallelism, bold-header
+  list, closing summary, chatbot leftover "Let me know if you'd like me to adjust
+  anything!"). It follows the report format of the skill and does not use perfect
+  grammar or formal tone as evidence.
