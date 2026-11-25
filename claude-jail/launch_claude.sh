@@ -27,6 +27,9 @@ jail_project_flags
 NETWORK_FLAGS=()
 [ -n "${JAIL_NETWORK:-}" ] && NETWORK_FLAGS=(--network "$JAIL_NETWORK")
 
+# Report the host-run files Claude changed, when the container exits.
+jail_watch_start
+
 # Arguments are handed to claude: 'claude-jail --resume', 'claude-jail -p ...'
 podman run --rm \
   "${JAIL_FLAGS[@]}" \

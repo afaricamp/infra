@@ -41,6 +41,9 @@ fi
 
 PROXY_URL="http://$JAIL_PROXY:8888"
 
+# Report the host-run files Claude changed, when the container exits.
+jail_watch_start
+
 # Arguments are handed to claude: 'claude-jailed --resume', 'claude-jailed -p ...'
 podman run --rm \
   "${JAIL_FLAGS[@]}" \

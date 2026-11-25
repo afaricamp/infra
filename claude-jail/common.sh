@@ -259,9 +259,90 @@ if [ -n "$JAIL_PERSONAL_SKILLS_DIR" ] && [ -d "$JAIL_PERSONAL_SKILLS_DIR" ]; the
   JAIL_FLAGS+=(-v "$JAIL_PERSONAL_SKILLS_DIR":/home/claudeuser/.claude/skills:ro,z)
 fi
 
+# --- Watched files: what changed in the project while Claude ran ---
+# Read-only mounts only protect paths that exist at launch, and the host also
+# runs files that cannot be read-only because Claude has to edit them: the
+# Makefile, package.json scripts, CI workflows, shell scripts. So the launcher
+# takes a snapshot of those before the container starts and, when it exits
+# (normally, with an error or on Ctrl-C), lists the ones that were created,
+# changed or deleted, for you to review before running them on the host.
+# Computed on the host, never in the jail; Claude's exit code is kept.
+# JAIL_WATCH_PATHS: space-separated paths or globs relative to the project
+# (directories are walked); empty turns the report off.
+JAIL_WATCH_PATHS="${JAIL_WATCH_PATHS-Makefile GNUmakefile makefile package.json composer.json go.mod .envrc .github/workflows *.sh .git/hooks}"
+
+# jail_sha256: the SHA-256 of stdin, with whatever this host has.
+jail_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  else openssl dgst -sha256 -r | cut -d' ' -f1
+  fi
+}
+
+# jail_watch_snapshot DIR: one line per watched file, "path<TAB>mode<TAB>sha256",
+# sorted by path. mode is x for executable files, - otherwise. A file found
+# under two names is listed once, by inode: on a case-insensitive file system
+# (the macOS default) 'makefile' and 'Makefile' are the same file.
+jail_watch_snapshot() {
+  (
+    cd "$1" || exit 0
+    for p in $JAIL_WATCH_PATHS; do
+      for f in $p; do
+        if [ -d "$f" ]; then find "$f" -type f; elif [ -f "$f" ]; then printf '%s\n' "$f"; fi
+      done
+    done | while IFS= read -r f; do
+      # 'ls -di' is the portable way to read an inode ('stat' takes different
+      # flags on GNU and BSD); only the number is used, never the name.
+      # shellcheck disable=SC2012
+      printf '%s\t%s\n' "$(ls -di -- "$f" | awk '{ print $1 }')" "$f"
+    done | awk -F'\t' '!seen[$1]++ { print $2 }' | sort | while IFS= read -r f; do
+      m=-; [ -x "$f" ] && m=x
+      printf '%s\t%s\t%s\n' "$f" "$m" "$(jail_sha256 < "$f")"
+    done
+  )
+}
+
+# jail_watch_start: snapshot now, report from an EXIT trap. Call it right
+# before 'podman run'.
+jail_watch_start() {
+  [ -n "$JAIL_WATCH_PATHS" ] || return 0
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1 &&
+     ! command -v openssl >/dev/null 2>&1; then
+    echo "WARNING: no sha256sum, shasum or openssl on this host: no report of changed files." >&2
+    return 0
+  fi
+  JAIL_WATCH_DIR="$(pwd -P)"
+  JAIL_WATCH_BEFORE="$(mktemp "${TMPDIR:-/tmp}/claude-jail-watch.XXXXXX")"
+  jail_watch_snapshot "$JAIL_WATCH_DIR" > "$JAIL_WATCH_BEFORE"
+  trap jail_watch_report EXIT
+}
+
+# jail_watch_report: compare with the snapshot and print what changed to
+# stderr. Runs as the EXIT trap, so it does not change the exit status.
+jail_watch_report() {
+  [ -n "${JAIL_WATCH_BEFORE:-}" ] && [ -f "$JAIL_WATCH_BEFORE" ] || return 0
+  local changes
+  changes="$(jail_watch_snapshot "$JAIL_WATCH_DIR" | awk -F'\t' '
+    NR == FNR { before[$1] = $2 FS $3; next }
+    { seen[$1] = 1
+      if (!($1 in before)) print $1 "\tcreated"
+      else if (before[$1] != $2 FS $3) print $1 "\tchanged" }
+    END { for (p in before) if (!(p in seen)) print p "\tdeleted" }
+  ' "$JAIL_WATCH_BEFORE" - | sort)"
+  rm -f -- "$JAIL_WATCH_BEFORE"
+  [ -n "$changes" ] || return 0
+  {
+    echo ""
+    echo ">> Claude changed files that your host runs (make, npm scripts, git hooks,"
+    echo "   direnv, CI). Review them before you run anything from this project:"
+    printf '%s\n' "$changes" | awk -F'\t' '{ printf "     %-8s %s\n", $2, $1 }'
+  } >&2
+}
+
 # Each launcher runs jail_guard, jail_check_volumes and jail_project_flags,
-# then passes "${JAIL_FLAGS[@]}" "${JAIL_PROJECT_FLAGS[@]}" to podman run,
-# followed by the image and the launcher's own arguments (handed to claude).
+# then jail_watch_start, then passes "${JAIL_FLAGS[@]}" "${JAIL_PROJECT_FLAGS[@]}"
+# to podman run, followed by the image and the launcher's own arguments
+# (handed to claude).
 
 # =============================================================================
 # OPTIONAL — read-only rootfs (maximum isolation).

