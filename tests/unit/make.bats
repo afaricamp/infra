@@ -282,3 +282,94 @@ skills_src() {
   has_pair "$(run_args)" -v claudetest-home:/v/claudetest-home:z
   has_line "$(run_args)" localhost/claude-jail:test
 }
+
+# --- the Claude binary: checked before every image build ----------------------
+
+# fake_bin [PLATFORM]: a fake claude-bin in $CJ with a matching claude-bin.info.
+fake_bin() {
+  CJ="$BATS_TEST_TMPDIR/claude-jail"
+  mkdir -p "$CJ"
+  printf 'not really claude\n' > "$CJ/claude-bin"
+  local sum
+  if command -v sha256sum >/dev/null; then sum="$(sha256sum < "$CJ/claude-bin" | cut -d' ' -f1)"
+  else sum="$(shasum -a 256 < "$CJ/claude-bin" | cut -d' ' -f1)"; fi
+  printf 'version=2.1.332\nplatform=%s\nsha256=%s\nmanifest=https://example.invalid\n' "${1:-linux-x64}" "$sum" > "$CJ/claude-bin.info"
+}
+
+@test "build-claude: builds a binary whose checksum and architecture match" {
+  fake_bin linux-x64
+  export STUB_ARCH=amd64
+  run make_repo build-claude CLAUDE_JAIL="$CJ" JAIL_IMAGE=localhost/claude-jail:x
+  [ "$status" -eq 0 ]
+  contains "$output" "2.1.332 (linux-x64): SHA-256 matches the release manifest, architecture matches podman"
+  grep -q '^build -t localhost/claude-jail:x' "$STUB_LOG"
+}
+
+@test "build-claude: refuses an x86-64 binary where podman runs arm64 (copied from another machine)" {
+  fake_bin linux-x64
+  export STUB_ARCH=arm64
+  run make_repo build-claude CLAUDE_JAIL="$CJ"
+  [ "$status" -ne 0 ]
+  contains "$output" "claude-bin is linux-x64, but podman runs linux-arm64 containers"
+  contains "$output" "make force-download-claude"
+  not grep -q '^build ' "$STUB_LOG"
+}
+
+@test "build-claude: refuses a binary that changed after it was checked" {
+  fake_bin linux-x64
+  echo tampered >> "$CJ/claude-bin"
+  run make_repo build-claude CLAUDE_JAIL="$CJ"
+  [ "$status" -ne 0 ]
+  contains "$output" "claude-bin changed after it was downloaded and checked"
+  not grep -q '^build ' "$STUB_LOG"
+}
+
+@test "build-claude: refuses a binary with no record of the manifest check, or a broken one" {
+  fake_bin linux-x64
+  rm "$CJ/claude-bin.info"
+  run make_repo build-claude CLAUDE_JAIL="$CJ"
+  [ "$status" -ne 0 ]
+  contains "$output" "claude-bin.info is missing"
+
+  printf 'version=1\nplatform=linux-x64\nsha256=nothex\n' > "$CJ/claude-bin.info"
+  run make_repo build-claude CLAUDE_JAIL="$CJ"
+  [ "$status" -ne 0 ]
+  contains "$output" "no valid sha256"
+  not grep -q '^build ' "$STUB_LOG"
+}
+
+@test "build-claude: claude-bin.info is parsed, never sourced" {
+  fake_bin linux-x64
+  printf 'version=$(touch %s/pwned)\n' "$BATS_TEST_TMPDIR" >> "$CJ/claude-bin.info"
+  printf '$(touch %s/pwned)\n' "$BATS_TEST_TMPDIR" >> "$CJ/claude-bin.info"
+  run make_repo build-claude CLAUDE_JAIL="$CJ"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+}
+
+@test "build-claude: builds when podman does not report its architecture, and says it was not checked" {
+  fake_bin linux-arm64
+  export STUB_ARCH=none
+  run make_repo build-claude CLAUDE_JAIL="$CJ"
+  [ "$status" -eq 0 ]
+  contains "$output" "architecture: not checked"
+}
+
+@test "verify: reports the binary's version and check, and never fails on it" {
+  fake_bin linux-arm64
+  export STUB_ARCH=arm64
+  run make_repo verify CLAUDE_JAIL="$CJ"
+  contains "$output" "2.1.332 (linux-arm64): SHA-256 matches the release manifest"
+
+  rm "$CJ/claude-bin.info"
+  run make_repo verify CLAUDE_JAIL="$CJ"
+  contains "$output" "claude-bin.info is missing"
+}
+
+@test "download-claude: a present binary shows its recorded version, without running it" {
+  fake_bin linux-arm64
+  run make_repo download-claude CLAUDE_JAIL="$CJ"
+  [ "$status" -eq 0 ]
+  contains "$output" "claude-bin already present (2.1.332 linux-arm64)"
+  not grep -q '^run ' "$STUB_LOG"
+}
