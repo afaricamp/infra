@@ -146,6 +146,29 @@ The React and Vue containers raise `--pids-limit` to 4096, because Node tooling 
 
 If a dev server is not reachable from the host, the cause is almost always one of two things: Gateway's `forwardPorts` handling over Podman is patchy (add an explicit `"-p=5173:5173"` to `runArgs`), or the dev server is bound to `127.0.0.1` inside the container and needs `--host` (Vite) or `--host 0.0.0.0` (Nuxt) to listen on all interfaces.
 
+### Monorepos (backend and frontend in one repo)
+
+For a project with more than one stack, such as a Go API and a React front end, use one git repository with a dev container per part:
+
+```bash
+newproj-mono my-web go:api react:web    # any <type>:<dir> pairs, at least one
+```
+
+```
+$DEV_PROJECTS/my-web/          # one git repo; run the jail here
+├── .ai-sessions/
+├── api/.devcontainer/devcontainer.json    # go
+└── web/.devcontainer/devcontainer.json    # react
+```
+
+Every part is checked before anything is created. Then:
+
+- **IDEs:** one dev container per part in Gateway, pointed at `my-web/api` (GoLand) and at `my-web/web` (WebStorm). Two IDE backends need memory: on macOS give the podman machine 8 GB or more (`podman machine set --memory`).
+- **Claude:** run the jail from `my-web`, not from a part, so it sees the whole project. It has Go and Node, so it can run both test suites; install the front end's dependencies in its dev container first.
+- **Front end to API:** the parts run in separate containers. Publish the API's port in `api/.devcontainer/devcontainer.json` (for example `"-p=8080:8080"` in `runArgs`, with the server listening on `0.0.0.0`) and point the dev server's proxy at `http://host.containers.internal:8080`.
+
+The launchers keep every nested `.devcontainer` read-only, like the top-level one (see [Security notes](#security-notes-read-them)).
+
 ## Skills
 
 Both launchers mount [`devkit/`](devkit/README.md) read-only into the jail and load it as a plugin (`CLAUDE_CODE_PLUGIN_DIRS`), so every project gets the same skills as `/devkit:<skill>`:
@@ -185,7 +208,7 @@ make update-claude     # re-download the binary and rebuild the image
 ## Security notes (read them)
 
 - **The binary is downloaded without installing anything on the host.** `download-claude` runs the official installer inside an ephemeral Ubuntu container and extracts only the binary. This avoids a direct `curl | bash` on your machine and the background updater. The installer is served from `claude.ai` over HTTPS (the official channel); even so, you are welcome to review `https://claude.ai/install.sh` first.
-- **The project directory is the shared boundary, and the host reads it too.** The Claude jail and the JetBrains dev container mount the same `$DEV_PROJECTS/<project>`. Most of what Claude writes there runs inside the dev container, but some files in a project are executed **on the host**: `.devcontainer/devcontainer.json` (Gateway applies its `runArgs`, so `--privileged` or a mount of your home would get you a container with no isolation; and the dev container spec runs `initializeCommand` on the host), `.git/hooks/*` and `.git/config` (`core.fsmonitor`, `core.hooksPath` and aliases run when you use git on the host), `.envrc` if you use direnv, and `.claude/settings.json` if you also run Claude Code on the host in that project (its hooks, `statusLine` and `apiKeyHelper` are commands). The launchers mount those paths **read-only** inside the jail (override the list with `JAIL_RO_PATHS`). Three gaps remain: a path that does not exist when you launch cannot be protected (if a project has no `.git` and Claude runs `git init`, review `.git/hooks` and `.git/config` before using git on the host); `.claude/settings.local.json` and `.mcp.json` run commands on the host in the same way but stay writable, because Claude writes `settings.local.json` when you allow a command for good and a read-only file would break that (review them before opening the project with Claude on the host); and anything you run yourself on the host from the project (`make`, `npm run`, scripts) is code Claude could have edited. Keep one directory per project to limit the blast radius.
+- **The project directory is the shared boundary, and the host reads it too.** The Claude jail and the JetBrains dev container mount the same `$DEV_PROJECTS/<project>`. Most of what Claude writes there runs inside the dev container, but some files in a project are executed **on the host**: `.devcontainer/devcontainer.json` (Gateway applies its `runArgs`, so `--privileged` or a mount of your home would get you a container with no isolation; and the dev container spec runs `initializeCommand` on the host), the same file in the parts of a monorepo (`api/.devcontainer`), `.git/hooks/*` and `.git/config` (`core.fsmonitor`, `core.hooksPath` and aliases run when you use git on the host), `.envrc` if you use direnv, and `.claude/settings.json` if you also run Claude Code on the host in that project (its hooks, `statusLine` and `apiKeyHelper` are commands). The launchers mount those paths **read-only** inside the jail (override the list with `JAIL_RO_PATHS`). Nested `.devcontainer` folders are found at launch down to four levels below the project, skipping `node_modules`, `vendor` and `.git` (`JAIL_RO_NESTED_DEPTH=<n>` changes the depth, `0` turns the scan off). Three gaps remain: a path that does not exist when you launch cannot be protected (if a project has no `.git` and Claude runs `git init`, review `.git/hooks` and `.git/config` before using git on the host); `.claude/settings.local.json` and `.mcp.json` run commands on the host in the same way but stay writable, because Claude writes `settings.local.json` when you allow a command for good and a read-only file would break that (review them before opening the project with Claude on the host); and anything you run yourself on the host from the project (`make`, `npm run`, scripts) is code Claude could have edited. Keep one directory per project to limit the blast radius.
 - **Read-only `.git/config` inside the jail** means `git config`, `git remote add` or `git branch -u` fail there. Do those on the host.
 - **`--userns=keep-id` in the `devcontainer.json` files** is the least certain part: it guarantees files come out owned by your user, but the JetBrains Podman integration has rough edges. If a dev container will not start, or files end up with odd ownership, that line is the first thing to check.
 - **Dev container network egress.** It runs with a normal network because it needs to download Go modules, Composer packages and npm packages. The Claude jail is the one that can be restricted to Anthropic only, with `make egress`.
@@ -205,7 +228,7 @@ Claude Code ships its own sandbox, and Anthropic publishes a reference dev conta
 | What it isolates | Bash commands and the processes they start. Claude's file tools, MCP servers, hooks and the status line run outside it | The whole Claude process | The whole Claude process, including its tools, hooks, MCP servers and plugins |
 | What it can read | Most of the machine by default, `~/.ssh` and `~/.aws/credentials` included; narrowed with `denyRead` | What you mount into it | The project and its own volumes. Your home is never mounted, and on macOS the VM only shares `$DEV_PROJECTS` and this repo |
 | What it can write | The working directory, a temp directory and directories you add | The mounted workspace | The project |
-| Project files your host runs later | Protects `.claude` settings, `.mcp.json`, shell startup files and `~/.claude` | Not covered | Read-only: `.devcontainer`, `.git/hooks`, `.git/config`, `.envrc`, `.claude/settings.json`. Not yet `.mcp.json` or `.claude/settings.local.json` (see [Security notes](#security-notes-read-them)) |
+| Project files your host runs later | Protects `.claude` settings, `.mcp.json`, shell startup files and `~/.claude` | Not covered | Read-only: `.devcontainer` (nested ones too), `.git/hooks`, `.git/config`, `.envrc`, `.claude/settings.json`. Not yet `.mcp.json` or `.claude/settings.local.json` (see [Security notes](#security-notes-read-them)) |
 | Network | A local proxy with a domain allowlist that starts empty; new domains prompt or are refused depending on the permission mode | A default-deny iptables firewall (needs `NET_ADMIN` and `NET_RAW`) | Normal network with `claude-jail`; with `claude-jailed`, a hostname allowlist on port 443 only, no direct route and no DNS |
 | Your host credentials | Readable unless you deny them | Absent unless you mount them | Absent |
 | Ways out from inside a session | Claude can retry a command unsandboxed (`dangerouslyDisableSandbox`, with your approval depending on the mode); `excludedCommands` and `!` commands run outside | None | None |

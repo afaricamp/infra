@@ -141,6 +141,53 @@ flags() {
   has_line "$output" "$PROJ/.claude/settings.json:/home/claudeuser/project/.claude/settings.json:ro"
 }
 
+@test "project: nested .devcontainer folders (monorepo parts) are read-only too" {
+  mkdir -p "$PROJ/api/.devcontainer" "$PROJ/apps/web/.devcontainer" "$PROJ/.devcontainer"
+  flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  for p in .devcontainer api/.devcontainer apps/web/.devcontainer; do
+    has_pair "$output" -v "$PROJ/$p:/home/claudeuser/project/$p:ro"
+  done
+  [ "$(grep -c '.devcontainer:ro$' <<<"$output")" -eq 3 ]
+}
+
+@test "project: the nested scan skips node_modules, vendor and .git, and stops at JAIL_RO_NESTED_DEPTH" {
+  mkdir -p "$PROJ/node_modules/pkg/.devcontainer" "$PROJ/vendor/lib/.devcontainer" \
+    "$PROJ/.git/modules/x/.devcontainer" "$PROJ/a/b/c/d/.devcontainer" "$PROJ/a/b/c/.devcontainer"
+  flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  [ "$(grep -c ':ro$' <<<"$output")" -eq 1 ]
+  has_line "$output" "$PROJ/a/b/c/.devcontainer:/home/claudeuser/project/a/b/c/.devcontainer:ro"
+
+  JAIL_RO_NESTED_DEPTH=5 flags JAIL_PROJECT_FLAGS
+  has_line "$output" "$PROJ/a/b/c/d/.devcontainer:/home/claudeuser/project/a/b/c/d/.devcontainer:ro"
+
+  JAIL_RO_NESTED_DEPTH=0 flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  not grep -q ':ro$' <<<"$output"
+}
+
+@test "project: a nested path also listed in JAIL_RO_PATHS is mounted once" {
+  mkdir -p "$PROJ/api/.devcontainer"
+  JAIL_RO_PATHS="api/.devcontainer" flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'api/.devcontainer:ro$' <<<"$output")" -eq 1 ]
+}
+
+@test "project: JAIL_RO_PATHS still decides about the top-level .devcontainer" {
+  mkdir -p "$PROJ/.devcontainer" "$PROJ/api/.devcontainer"
+  JAIL_RO_PATHS=".git/hooks" flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  not grep -q "^$PROJ/.devcontainer:" <<<"$output"
+  has_line "$output" "$PROJ/api/.devcontainer:/home/claudeuser/project/api/.devcontainer:ro"
+}
+
+@test "project: a JAIL_RO_NESTED_DEPTH that is not a number stops the launch" {
+  JAIL_RO_NESTED_DEPTH=deep flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 1 ]
+  contains "$output" "JAIL_RO_NESTED_DEPTH must be a number"
+}
+
 # --- JAIL_FLAGS -----------------------------------------------------------------
 
 @test "flags: hardening is always present" {

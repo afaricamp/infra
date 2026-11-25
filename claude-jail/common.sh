@@ -122,7 +122,8 @@ jail_check_volumes() {
 # The project directory is shared with the host and with the dev container,
 # and some files in it are executed OUTSIDE the jail:
 #   .devcontainer  Gateway reads runArgs/mounts from it, and 'initializeCommand'
-#                  runs on the host by spec. Writable, it is a way out.
+#                  runs on the host by spec. Writable, it is a way out. The
+#                  nested ones of a monorepo too (see JAIL_RO_NESTED_DEPTH).
 #   .git/hooks     run by git on the host (commit, checkout, ...).
 #   .git/config    core.fsmonitor / core.hooksPath / aliases run commands on the
 #                  host; this also means 'git config'/'git remote add' fail in
@@ -144,13 +145,38 @@ jail_check_volumes() {
 # private label by an older version is fixed by the next launch.
 JAIL_RO_PATHS="${JAIL_RO_PATHS:-.devcontainer .git/hooks .git/config .envrc .claude/settings.json}"
 
+# Nested .devcontainer folders are host-executed too: a monorepo with one dev
+# container per part (api/.devcontainer, web/.devcontainer, see newproj-mono)
+# hands each of them to Gateway. They are found at launch, down to
+# JAIL_RO_NESTED_DEPTH levels below the project (default 4, so
+# apps/web/admin/.devcontainer is covered; 0 turns the scan off), skipping
+# node_modules, vendor and .git so a big tree stays fast. The top-level one
+# belongs to JAIL_RO_PATHS, so overriding that list still decides about it.
+JAIL_RO_NESTED_DEPTH="${JAIL_RO_NESTED_DEPTH:-4}"
+
 jail_project_flags() {
-  local here p
+  local here p seen=" "
   here="$(pwd -P)"
   JAIL_PROJECT_FLAGS=(-v "$here":/home/claudeuser/project:z)
   for p in $JAIL_RO_PATHS; do
-    [ -e "$here/$p" ] && JAIL_PROJECT_FLAGS+=(-v "$here/$p":"/home/claudeuser/project/$p":ro)
+    [ -e "$here/$p" ] || continue
+    JAIL_PROJECT_FLAGS+=(-v "$here/$p":"/home/claudeuser/project/$p":ro)
+    seen="$seen$p "
   done
+  case "$JAIL_RO_NESTED_DEPTH" in
+    ''|*[!0-9]*) jail_die "JAIL_RO_NESTED_DEPTH must be a number (got '$JAIL_RO_NESTED_DEPTH')." ;;
+  esac
+  [ "$JAIL_RO_NESTED_DEPTH" -gt 0 ] || return 0
+  # "$here/." so the project's own name never matches a pruned name.
+  while IFS= read -r p; do
+    p="${p#"$here"/./}"
+    [ "$p" = .devcontainer ] && continue
+    case "$seen" in *" $p "*) continue ;; esac
+    JAIL_PROJECT_FLAGS+=(-v "$here/$p":"/home/claudeuser/project/$p":ro)
+    seen="$seen$p "
+  done < <(find "$here/." -maxdepth "$JAIL_RO_NESTED_DEPTH" \
+             \( -name node_modules -o -name vendor -o -name .git \) -prune -o \
+             -type d -name .devcontainer -print -prune 2>/dev/null)
   return 0
 }
 
