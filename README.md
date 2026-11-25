@@ -59,6 +59,7 @@ make podman-setup      # once; Linux: asks for sudo (linger). macOS: creates/sta
 make all               # download Claude + build the 5 images + install aliases
 source ~/.bashrc       # load the aliases (~/.zshrc with zsh, the macOS default)
 make verify            # sanity check
+make doctor            # if anything looks wrong: every problem with the command that fixes it
 ```
 
 `make all` needs no sudo. The only step that uses sudo is `podman-setup` on Linux (the systemd linger). `make aliases` hooks `dev.sh` into the rc file of your login shell (`~/.zshrc` for zsh, `~/.bashrc` otherwise; `SHELL_RC=<file>` to choose); `dev.sh` works in bash and zsh.
@@ -85,6 +86,7 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make personal-skills [SRC=<dir>]` | Copy your own Claude skills (`~/.claude/skills` by default) to `personal-skills/`, which the jail loads read-only (see [Skills](#skills)) |
 | `make fix-volumes` | Repair ownership and SELinux labels of the Claude volumes (see [Troubleshooting](#troubleshooting)) |
 | `make verify` | Check the binary (version, checksum, architecture), images, socket, aliases, egress and DNS leaks |
+| `make doctor` | Check the whole setup (podman version, rootless, the podman machine's memory and shared folders, subuids, cgroups, network backend, the binary, images, volumes, aliases, the proxy) and print the command that fixes each problem. Changes nothing; exits 1 if something will not work |
 | `make lint` | shellcheck + hadolint, run in containers |
 | `make test` | Static checks + unit tests (fast, starts no real jail) |
 | `make test-static` / `test-unit` / `test-integration` | One test level (see [Tests](#tests)) |
@@ -274,6 +276,20 @@ The integration tests are safe on your workstation: everything they create is na
 SELinux tests skip themselves unless SELinux is enforcing, which is never the case on GitHub's runners: **run `make test-integration` on an enforcing host** to cover the SELinux labels: the login bug, and two containers writing to the same project at once (which with `:Z` would cut the first one off). Two things are not automated at all and stay manual: logging in to Claude for real, and JetBrains Gateway.
 
 ## Troubleshooting
+
+Start with `make doctor`. It checks everything below and more, and prints a fix for each problem it finds:
+
+```
+== podman machine
+  ok    running
+  WARN  2048 MiB of memory: an IDE backend or two plus the jail need 8 GB or more
+        fix: podman machine stop && podman machine set --memory 8192 && podman machine start
+== Claude binary and image
+  FAIL  image localhost/claude-jail:latest is missing
+        fix: make build-claude
+```
+
+`ok` is fine, `WARN` works but is weaker or slower than it should be, and `FAIL` will not work until you run the fix.
 
 ### `Permission denied` on `~/.claude/*.json` (login fails)
 

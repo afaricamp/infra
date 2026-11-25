@@ -22,6 +22,11 @@
 #   STUB_CHECK_FAIL     set to make the check container fail to start
 #   STUB_ARCH           answer to 'info --format {{.Host.Arch}}' (default amd64;
 #                       'none' makes it fail)
+#   For doctor.sh: STUB_PODMAN_VERSION (5.6.0), STUB_ROOTLESS (true),
+#   STUB_CGROUPS (v2), STUB_NET_BACKEND (netavark), STUB_MACHINE_STATE
+#   (running; 'none' = no machine), STUB_MACHINE_ROOTFUL (false),
+#   STUB_MACHINE_MEMORY (8192), STUB_MACHINE_MOUNTS (folders the VM shares,
+#   one per line). 'container exists' is true when STUB_PROXY_RUNNING is set.
 #   The jail itself ('podman run' of anything else):
 #   STUB_RUN_EFFECT     shell snippet run in the current directory, as if
 #                       Claude had changed the project (e.g. 'echo x >> Makefile')
@@ -50,9 +55,30 @@ case "$1 ${2:-}" in
   "image exists")
     exit "${STUB_IMAGE_EXISTS:-0}" ;;
   "info --format")
-    # Only the architecture is asked for. STUB_ARCH=none: podman cannot answer.
-    [ "${STUB_ARCH:-amd64}" = none ] && exit 125
-    echo "${STUB_ARCH:-amd64}" ;;
+    case "$3" in
+      *Arch*)
+        # STUB_ARCH=none: podman cannot answer.
+        [ "${STUB_ARCH:-amd64}" = none ] && exit 125
+        echo "${STUB_ARCH:-amd64}" ;;
+      *Rootless*)       echo "${STUB_ROOTLESS:-true}" ;;
+      *CgroupsVersion*) echo "${STUB_CGROUPS:-v2}" ;;
+      *NetworkBackend*) echo "${STUB_NET_BACKEND:-netavark}" ;;
+      *) exit 1 ;;
+    esac ;;
+  "version --format")
+    echo "${STUB_PODMAN_VERSION:-5.6.0}" ;;
+  "machine inspect")
+    [ "${STUB_MACHINE_STATE:-running}" = none ] && exit 125
+    case "$*" in
+      *State*)   echo "${STUB_MACHINE_STATE:-running}" ;;
+      *Rootful*) echo "${STUB_MACHINE_ROOTFUL:-false}" ;;
+      *Memory*)  echo "${STUB_MACHINE_MEMORY:-8192}" ;;
+      *) echo '[]' ;;
+    esac ;;
+  "machine ssh")
+    printf '%s\n' "${STUB_MACHINE_MOUNTS:-}" ;;
+  "container exists")
+    [ -n "${STUB_PROXY_RUNNING:-}" ] ;;
   "network exists")
     grep -qxF -- "$last" "$log.removed" 2>/dev/null && exit 1
     case " ${STUB_NETWORKS:-} " in *" $last "*) exit 0 ;; esac

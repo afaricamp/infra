@@ -13,7 +13,7 @@ ok()  { printf 'ok    %s\n' "$1"; }
 check() { local what="$1"; shift; if "$@"; then ok "$what"; else bad "$what"; fi; }
 
 # Shell syntax of everything that is run or sourced.
-for f in dev.sh claude-jail/*.sh claude-jail/egress-hardening/*.sh tests/static/*.sh tests/unit/stubs/*; do
+for f in dev.sh doctor.sh claude-jail/*.sh claude-jail/egress-hardening/*.sh tests/static/*.sh tests/unit/stubs/*; do
   if bash -n "$f"; then ok "bash -n $f"; else bad "bash -n $f"; fi
 done
 
