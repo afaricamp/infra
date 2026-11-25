@@ -17,6 +17,7 @@
 override PROJECT := $(value PROJECT)
 override TYPE    := $(value TYPE)
 override FORCE   := $(value FORCE)
+override SRC     := $(value SRC)
 
 CLAUDE_JAIL   := $(CURDIR)/claude-jail
 DEVCONTAINERS := $(CURDIR)/devcontainers
@@ -35,6 +36,7 @@ JAIL_PROXY         ?= claude-proxy
 JAIL_PROXY_IMAGE   ?= claude-egress-proxy
 JAIL_NET_INTERNAL  ?= jail-internal
 JAIL_NET_EGRESS    ?= jail-egress
+JAIL_PERSONAL_SKILLS_DIR ?= $(CURDIR)/personal-skills
 
 # Where your projects live: the only directories the Claude jail may be
 # launched from. Baked into the installed dev.sh by 'make aliases'.
@@ -51,7 +53,7 @@ DC_TYPES      := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(DEVCONTAINER
 # '$(...)' inside them (even run '$(shell ...)') when it references or exports
 # them, so they are never exported and only read raw, through $(value), and
 # single-quoted for the shell: a path is just a path.
-unexport PROJECT TYPE FORCE
+unexport PROJECT TYPE FORCE SRC
 shquote = '$(subst ','\'',$(value $(1)))'
 
 # Tests and linters. Linters and the unit tests run in containers so nothing
@@ -82,8 +84,8 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .DEFAULT_GOAL := help
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
-        build build-claude build-go build-php build-react egress egress-dev \
-        aliases devcontainer ai-sessions fix-volumes verify lint clean-images \
+        build build-claude build-go build-php build-react build-vue egress egress-dev \
+        aliases devcontainer ai-sessions personal-skills fix-volumes verify lint clean-images \
         test test-static test-unit test-integration test-all
 
 help: ## Show this help
@@ -169,7 +171,7 @@ force-download-claude: ## Always re-download the native binary (VERSION=latest|x
 	@chmod +x "$(CLAUDE_JAIL)/claude-bin"
 	@echo ">> Done: $(CLAUDE_JAIL)/claude-bin"
 
-build: build-claude build-go build-php build-react ## Build all four images
+build: build-claude build-go build-php build-react build-vue ## Build all five images
 
 build-claude: ## Build the Claude jail image
 	@test -f "$(CLAUDE_JAIL)/claude-bin" || { echo "ERROR: claude-bin missing. Run 'make download-claude'"; exit 1; }
@@ -185,6 +187,9 @@ build-php: ## Build the PHP dev container image
 
 build-react: ## Build the React/Node dev container image
 	podman build -t localhost/devcontainer-react:latest "$(DEVCONTAINERS)/react"
+
+build-vue: ## Build the Vue/Node dev container image
+	podman build -t localhost/devcontainer-vue:latest "$(DEVCONTAINERS)/vue"
 
 egress: ## Start the egress allowlist proxy (strict: Anthropic only)
 	"$(CLAUDE_JAIL)/egress-hardening/setup-egress.sh"
@@ -248,6 +253,32 @@ ai-sessions: ## Add .ai-sessions/ to a project. Usage: make ai-sessions PROJECT=
 	   printf '%s\n' '# Local AI session notes (see .ai-sessions/README.md)' '.ai-sessions/*' '!.ai-sessions/README.md' >> "$$gi"; \
 	   echo "OK: .ai-sessions/ ignored in $$gi (except its README)"; \
 	 fi
+
+# Your own Claude skills, for the jail: the launchers mount this copy read-only
+# over ~/.claude/skills. A copy and not a mount of the original because on
+# macOS the podman machine only shares $DEV_PROJECTS and this repo (and
+# ~/.claude holds your credentials), symlinks are resolved here instead of
+# breaking inside the container, and on Linux only the copy is relabelled.
+# Run it again after changing your skills. The .personal-skills marker means
+# the target only ever replaces a folder it created itself.
+personal-skills: ## Copy your Claude skills for the jail. Usage: make personal-skills [SRC=~/.claude/skills]
+	@src=$(call shquote,SRC); dest="$(JAIL_PERSONAL_SKILLS_DIR)"; \
+	 [ -n "$$src" ] || src="$$HOME/.claude/skills"; \
+	 case "$$src" in "~"/*) src="$$HOME/$${src#\~/}";; esac; \
+	 if [ ! -d "$$src" ]; then echo "ERROR: $$src is not a directory"; exit 1; fi; \
+	 if [ -z "$$dest" ]; then echo "ERROR: JAIL_PERSONAL_SKILLS_DIR is empty"; exit 1; fi; \
+	 if [ "$$(cd "$$src" && pwd -P)" = "$$(cd "$$dest" 2>/dev/null && pwd -P)" ]; then \
+	   echo "ERROR: SRC and JAIL_PERSONAL_SKILLS_DIR are the same directory ($$dest)"; exit 1; \
+	 fi; \
+	 if [ -e "$$dest" ] && [ ! -f "$$dest/.personal-skills" ]; then \
+	   echo "ERROR: $$dest exists and was not created by 'make personal-skills'; move it away first"; exit 1; \
+	 fi; \
+	 n=0; for d in "$$src"/*/; do if [ -f "$$d"SKILL.md ]; then n=$$((n + 1)); fi; done; \
+	 if [ "$$n" -eq 0 ]; then echo "ERROR: no <name>/SKILL.md in $$src"; exit 1; fi; \
+	 rm -rf "$$dest.tmp" && mkdir -p "$$dest.tmp" && cp -RL "$$src"/. "$$dest.tmp"/ && \
+	 printf 'Copied from %s by make personal-skills; replaced on every run.\n' "$$src" > "$$dest.tmp/.personal-skills" && \
+	 rm -rf "$$dest" && mv "$$dest.tmp" "$$dest" && \
+	 echo "OK: $$n skills copied to $$dest (read-only ~/.claude/skills in the jail)"
 
 # Runs chown as root of the jail's user namespace (keep-id, so UID 1000 inside
 # is you on the host) and remounts with ':z', which relabels the volumes with
@@ -336,4 +367,4 @@ test-integration: ## Level 3: real rootless podman (TESTS=<files> to pick, needs
 clean-images: ## Remove the built images (leaves volumes and data alone)
 	-podman rmi $(JAIL_IMAGE) $(JAIL_PROXY_IMAGE) \
 	  localhost/devcontainer-go:latest localhost/devcontainer-php:latest \
-	  localhost/devcontainer-react:latest
+	  localhost/devcontainer-react:latest localhost/devcontainer-vue:latest

@@ -13,10 +13,10 @@ guard() {
   run bash -c 'cd "$1" && source "$2" && jail_guard && echo PASSED' _ "$1" "${2:-$COMMON}"
 }
 
-# flags NAME [DIR]: print the array NAME after sourcing common.sh in DIR.
+# flags NAME [DIR] [COMMON]: print the array NAME after sourcing common.sh in DIR.
 flags() {
   run bash -c 'cd "$1" && source "$2" && jail_project_flags && eval "printf \"%s\n\" \"\${$3[@]}\""' \
-    _ "${2:-$PROJ}" "$COMMON" "$1"
+    _ "${2:-$PROJ}" "${3:-$COMMON}" "$1"
 }
 
 # --- jail_guard -------------------------------------------------------------
@@ -109,11 +109,11 @@ flags() {
 }
 
 @test "project: host-executed paths that exist are mounted read-only" {
-  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer"
-  touch "$PROJ/.git/config" "$PROJ/.envrc"
+  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer" "$PROJ/.claude"
+  touch "$PROJ/.git/config" "$PROJ/.envrc" "$PROJ/.claude/settings.json"
   flags JAIL_PROJECT_FLAGS
   [ "$status" -eq 0 ]
-  for p in .devcontainer .git/hooks .git/config .envrc; do
+  for p in .devcontainer .git/hooks .git/config .envrc .claude/settings.json; do
     has_pair "$output" -v "$PROJ/$p:/home/claudeuser/project/$p:ro"
   done
 }
@@ -131,6 +131,14 @@ flags() {
   flags JAIL_PROJECT_FLAGS
   [ "$(grep -c ':ro$' <<<"$output")" -eq 1 ]
   has_line "$output" "$PROJ/secrets:/home/claudeuser/project/secrets:ro"
+}
+
+@test "project: the rest of .claude stays writable (skills, commands, settings.local.json)" {
+  mkdir -p "$PROJ/.claude/skills"
+  touch "$PROJ/.claude/settings.json" "$PROJ/.claude/settings.local.json"
+  flags JAIL_PROJECT_FLAGS
+  [ "$(grep -c ':ro$' <<<"$output")" -eq 1 ]
+  has_line "$output" "$PROJ/.claude/settings.json:/home/claudeuser/project/.claude/settings.json:ro"
 }
 
 # --- JAIL_FLAGS -----------------------------------------------------------------
@@ -291,4 +299,45 @@ check_volumes() {
   [ "$status" -eq 1 ]
   contains "$output" "volume 'claudetest-home'"
   has_line "$(cat "$STUB_LOG.check")" localhost/claude-jail:test
+}
+
+# --- personal skills --------------------------------------------------------------
+
+@test "personal skills: mounted read-only over ~/.claude/skills when the folder exists" {
+  mkdir -p "$BATS_TEST_TMPDIR/skills/demo"
+  JAIL_PERSONAL_SKILLS_DIR="$BATS_TEST_TMPDIR/skills" flags JAIL_FLAGS
+  [ "$status" -eq 0 ]
+  has_pair "$output" -v "$BATS_TEST_TMPDIR/skills:/home/claudeuser/.claude/skills:ro,z"
+}
+
+@test "personal skills: default is personal-skills/ next to the launchers' repo" {
+  # Resolved, as common.sh resolves its own path (/var -> /private/var on macOS).
+  local infra; infra="$(cd "$BATS_TEST_TMPDIR" && pwd -P)/infra"
+  mkdir -p "$infra/claude-jail" "$infra/personal-skills"
+  cp "$COMMON" "$infra/claude-jail/common.sh"
+  unset JAIL_PERSONAL_SKILLS_DIR
+  flags JAIL_FLAGS "$PROJ" "$infra/claude-jail/common.sh"
+  [ "$status" -eq 0 ]
+  has_pair "$output" -v "$infra/personal-skills:/home/claudeuser/.claude/skills:ro,z"
+}
+
+@test "personal skills: nothing mounted when the folder is missing or the variable is empty" {
+  JAIL_PERSONAL_SKILLS_DIR="$BATS_TEST_TMPDIR/missing" flags JAIL_FLAGS
+  [ "$status" -eq 0 ]
+  not grep -q '/home/claudeuser/.claude/skills' <<<"$output"
+
+  mkdir -p "$BATS_TEST_TMPDIR/skills"
+  JAIL_PERSONAL_SKILLS_DIR= flags JAIL_FLAGS
+  [ "$status" -eq 0 ]
+  not grep -q '/home/claudeuser/.claude/skills' <<<"$output"
+}
+
+@test "personal skills: refuses \$HOME, ~/.claude and / (relabelled and exposed whole)" {
+  export HOME="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$HOME/.claude"
+  for d in "$HOME" "$HOME/.claude" "$HOME/.claude/../" /; do
+    JAIL_PERSONAL_SKILLS_DIR="$d" flags JAIL_FLAGS
+    [ "$status" -eq 1 ]
+    contains "$output" "JAIL_PERSONAL_SKILLS_DIR cannot be"
+  done
 }

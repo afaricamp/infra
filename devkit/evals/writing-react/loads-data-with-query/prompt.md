@@ -5,4 +5,4 @@ timeout_seconds: 900
 allowed_tools: [Read, Glob, Grep, Skill, Write, Edit, Bash]
 ---
 
-Add a UserProfile component in src/features that loads /api/users/:id and shows the name and email.
+Add a UserProfile component in src/features that loads /api/users/:id and shows the name and email. No plan needed, go ahead and write it.

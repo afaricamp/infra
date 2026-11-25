@@ -3,6 +3,10 @@
 REPO="$(cd "$BATS_TEST_DIRNAME/../.." && pwd -P)"
 COMMON="$REPO/claude-jail/common.sh"
 
+# Tests never pick up a personal-skills/ folder you created with
+# 'make personal-skills'; the tests that need one set it themselves.
+export JAIL_PERSONAL_SKILLS_DIR=""
+
 # A projects directory with one project, as the launchers expect.
 setup_projects() {
   export DEV_PROJECTS="$BATS_TEST_TMPDIR/projects"

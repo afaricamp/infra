@@ -1,6 +1,6 @@
 # devkit
 
-A Claude Code plugin with the skills every project in `$DEV_PROJECTS` gets inside the Claude jail: a default workflow (feature, commit, ticket), default best practices for Go, PHP and React, and the same for infrastructure files (Containerfiles, shell scripts, GitHub Actions, Kubernetes manifests).
+A Claude Code plugin with the skills every project in `$DEV_PROJECTS` gets inside the Claude jail: a default workflow (feature, commit, ticket), default best practices for Go, PHP, React and Vue, and the same for infrastructure files (Containerfiles, shell scripts, GitHub Actions, Kubernetes manifests).
 
 The launchers mount this directory read-only into the jail and load it with `CLAUDE_CODE_PLUGIN_DIRS`, so the skills show up as `/devkit:<skill>` in every project. Read this before adding or changing a skill.
 
@@ -27,8 +27,9 @@ The launchers mount this directory read-only into the jail and load it with `CLA
 | `writing-go` | conventions | Go layout, errors, context, logging, tooling |
 | `writing-php` | conventions | Modern PHP 8.4, strict types, PHPStan, Composer, Symfony defaults |
 | `writing-react` | conventions | React 19 + TypeScript, state, effects, data fetching, accessibility |
+| `writing-vue` | conventions | Vue 3 + TypeScript (and Nuxt), props and emits, reactivity, composables, Pinia, SSR-safe data fetching |
 | `implementing-endpoints` | task | Plan and build an HTTP endpoint in Go or PHP, with its IntelliJ HTTP Client requests (`http/*.http`) |
-| `building-components` | task | Plan and build a React component or screen |
+| `building-components` | task | Plan and build a React or Vue component or screen |
 | `writing-tests` | task | Tests for Go, PHP and React, run them, report suspicious behaviour |
 | `finding-test-gaps` | task | List missing tests by priority without writing code |
 | `reviewing-code` | task | Review a diff or a path against the convention skills |
@@ -109,12 +110,20 @@ description: Writes unit and integration tests for Go, PHP and React code, runs 
 Each skill has at least three cases in `evals/<skill>/`, in the `claude plugin eval` format: two requests that must trigger the skill and get the right result, one close request that must not trigger it. Cases for skills with outside effects stop at the plan and check that nothing was pushed or created.
 
 ```bash
-claude plugin eval devkit                       # all cases
-claude plugin eval devkit --case 'writing-tests/*'
-claude plugin eval devkit --scaffold            # cases with a setup.sh
+claude plugin eval devkit --scaffold                        # all cases; --scaffold runs their setup.sh
+claude plugin eval devkit --scaffold --case 'loads-data-*'  # --case matches case names, not <skill>/<case>
 ```
 
 `evals/results/` is ignored by git.
+
+Inside the jail the devkit is at `/opt/devkit`, read-only, so the results go to the project, and Bash cannot be granted: `claude plugin eval` only grants it when the built-in sandbox can confine it, and the jail image has no `bubblewrap`. Grant `Write` and `Edit` only; the cases do not need a shell.
+
+```bash
+claude-jail plugin eval /opt/devkit --scaffold --trust-plugin --allow-tools Write Edit \
+  --no-publish --output-dir /home/claudeuser/project/.eval-results --case 'loads-data-*'
+```
+
+A case whose prompt asks for a component also triggers `building-components`, which stops at the plan until it is approved. Say so in the prompt ("No plan needed, go ahead") when the case grades the code.
 
 ## Adding or changing a skill
 

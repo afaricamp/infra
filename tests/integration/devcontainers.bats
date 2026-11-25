@@ -29,7 +29,7 @@ teardown_file() {
 # workspaceFolder), followed by the image.
 devcontainer_args() {
   local type="$1" json="$REPO/devcontainers/$1/devcontainer.json"
-  case " ${DC_TYPES_UNDER_TEST:-go php react} " in *" $type "*) ;; *) skip "not in DC_TYPES_UNDER_TEST" ;; esac
+  case " ${DC_TYPES_UNDER_TEST:-go php react vue} " in *" $type "*) ;; *) skip "not in DC_TYPES_UNDER_TEST" ;; esac
 
   local image="localhost/devcontainer-$type:test"
   podman build -q -t "$image" "$REPO/devcontainers/$type" >/dev/null
@@ -96,6 +96,10 @@ check_shared_with_jail() {
   check_devcontainer react
 }
 
+@test "devcontainer vue: builds, runs its onCreateCommand, files owned by you" {
+  check_devcontainer vue
+}
+
 @test "devcontainer go and the jail write to the same project at the same time" {
   check_shared_with_jail go
 }
@@ -106,4 +110,8 @@ check_shared_with_jail() {
 
 @test "devcontainer react and the jail write to the same project at the same time" {
   check_shared_with_jail react
+}
+
+@test "devcontainer vue and the jail write to the same project at the same time" {
+  check_shared_with_jail vue
 }

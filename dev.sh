@@ -51,7 +51,8 @@ alias claude-jailed="$DEV_CLAUDE_JAIL/egress-hardening/launch_claude_jailed.sh" 
 alias dc-build-go='make -C "$DEV_INFRA" build-go'
 alias dc-build-php='make -C "$DEV_INFRA" build-php'
 alias dc-build-react='make -C "$DEV_INFRA" build-react'
-alias dc-build='make -C "$DEV_INFRA" build-go build-php build-react'
+alias dc-build-vue='make -C "$DEV_INFRA" build-vue'
+alias dc-build='make -C "$DEV_INFRA" build-go build-php build-react build-vue'
 
 # --- Podman helpers ---
 alias pods='podman ps -a'
@@ -67,7 +68,7 @@ else
 fi
 
 # --- New projects with their dev container already wired up ---
-# usage:  newproj-go my-service  |  newproj-php my-api  |  newproj-react my-ui
+# usage:  newproj-go my-service  |  newproj-php my-api  |  newproj-react my-ui  |  newproj-vue my-web
 # One helper; the wrappers only differ in the TYPE they pass to make.
 _newproj() {
   local type="$1" name="$2"
@@ -99,3 +100,4 @@ _newproj() {
 newproj-go()    { _newproj go    "$1"; }
 newproj-php()   { _newproj php   "$1"; }
 newproj-react() { _newproj react "$1"; }
+newproj-vue()   { _newproj vue   "$1"; }

@@ -58,6 +58,13 @@ in_zsh() {
   [ ! -e "$BATS_TEST_TMPDIR/escape" ]
 }
 
+@test "newproj-vue: uses the vue devcontainer" {
+  in_devsh 'newproj-vue my-web >/dev/null && pwd'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$DEV_PROJECTS/my-web" ]
+  cmp "$REPO/devcontainers/vue/devcontainer.json" "$DEV_PROJECTS/my-web/.devcontainer/devcontainer.json"
+}
+
 @test "newproj: creates the project with its devcontainer and a git repo, and cds into it" {
   in_devsh 'newproj-react my-ui >/dev/null && pwd'
   [ "$status" -eq 0 ]
