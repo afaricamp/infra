@@ -50,7 +50,10 @@ setup() {
 }
 
 @test "host-executed paths are read-only inside the jail" {
-  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer" "$PROJ/.claude" "$PROJ/api/.devcontainer"
+  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer" "$PROJ/.claude" "$PROJ/api/.devcontainer" \
+    "$PROJ/api/.git/hooks" "$PROJ/.git/modules/libs/hooks"
+  echo '{}' > "$PROJ/.mcp.json"
+  echo '[submodule "libs"]' > "$PROJ/.gitmodules"
   echo '[core]' > "$PROJ/.git/config"
   echo '{}' > "$PROJ/.devcontainer/devcontainer.json"
   echo '{}' > "$PROJ/.claude/settings.json"
@@ -62,7 +65,11 @@ setup() {
              'touch .devcontainer/extra' \
              'echo evil >> .envrc' \
              'echo "{\"hooks\": {}}" > .claude/settings.json' \
-             'touch api/.devcontainer/devcontainer.json'; do
+             'touch api/.devcontainer/devcontainer.json' \
+             'echo "{\"mcpServers\":{}}" > .mcp.json' \
+             'echo "url = evil" >> .gitmodules' \
+             'touch api/.git/hooks/pre-commit' \
+             'touch .git/modules/libs/hooks/post-checkout'; do
     jail sh -c "$cmd"
     [ "$status" -ne 0 ] || { echo "writable: $cmd" >&2; false; }
   done
@@ -71,6 +78,9 @@ setup() {
   [ ! -s "$PROJ/.envrc" ]
   [ "$(cat "$PROJ/.claude/settings.json")" = '{}' ]
   [ ! -e "$PROJ/api/.devcontainer/devcontainer.json" ]
+  [ "$(cat "$PROJ/.mcp.json")" = '{}' ]
+  [ ! -e "$PROJ/api/.git/hooks/pre-commit" ]
+  [ ! -e "$PROJ/.git/modules/libs/hooks/post-checkout" ]
 
   # The rest of .git and .claude stays writable: Claude can still commit and
   # keep its project settings.

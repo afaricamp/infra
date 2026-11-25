@@ -109,11 +109,11 @@ flags() {
 }
 
 @test "project: host-executed paths that exist are mounted read-only" {
-  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer" "$PROJ/.claude"
-  touch "$PROJ/.git/config" "$PROJ/.envrc" "$PROJ/.claude/settings.json"
+  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer" "$PROJ/.claude" "$PROJ/.vscode" "$PROJ/.idea"
+  touch "$PROJ/.git/config" "$PROJ/.envrc" "$PROJ/.claude/settings.json" "$PROJ/.mcp.json" "$PROJ/.gitmodules"
   flags JAIL_PROJECT_FLAGS
   [ "$status" -eq 0 ]
-  for p in .devcontainer .git/hooks .git/config .envrc .claude/settings.json; do
+  for p in .devcontainer .git/hooks .git/config .gitmodules .envrc .claude/settings.json .mcp.json .vscode .idea; do
     has_pair "$output" -v "$PROJ/$p:/home/claudeuser/project/$p:ro"
   done
 }
@@ -180,6 +180,55 @@ flags() {
   [ "$status" -eq 0 ]
   not grep -q "^$PROJ/.devcontainer:" <<<"$output"
   has_line "$output" "$PROJ/api/.devcontainer:/home/claudeuser/project/api/.devcontainer:ro"
+}
+
+@test "project: nested git repositories get their hooks and config read-only, not the ones in node_modules" {
+  mkdir -p "$PROJ/api/.git/hooks" "$PROJ/node_modules/pkg/.git/hooks"
+  touch "$PROJ/api/.git/config" "$PROJ/node_modules/pkg/.git/config"
+  flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  has_pair "$output" -v "$PROJ/api/.git/hooks:/home/claudeuser/project/api/.git/hooks:ro"
+  has_pair "$output" -v "$PROJ/api/.git/config:/home/claudeuser/project/api/.git/config:ro"
+  not grep -q node_modules <<<"$output"
+}
+
+@test "project: submodules' git directories under .git/modules are read-only, and their .git files add nothing twice" {
+  mkdir -p "$PROJ/.git/hooks" "$PROJ/.git/modules/libs/hooks" "$PROJ/.git/modules/libs/modules/inner/hooks" "$PROJ/libs"
+  touch "$PROJ/.git/config" "$PROJ/.git/modules/libs/config" "$PROJ/.git/modules/libs/modules/inner/config"
+  echo "gitdir: ../.git/modules/libs" > "$PROJ/libs/.git"
+  flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  for p in .git/modules/libs/hooks .git/modules/libs/config .git/modules/libs/modules/inner/hooks .git/modules/libs/modules/inner/config; do
+    has_pair "$output" -v "$PROJ/$p:/home/claudeuser/project/$p:ro"
+  done
+  [ "$(grep -c 'modules/libs/hooks:ro$' <<<"$output")" -eq 1 ]
+}
+
+@test "project: a .git file pointing inside the project protects that git directory" {
+  mkdir -p "$PROJ/vendored/gitdir/hooks" "$PROJ/tool"
+  touch "$PROJ/vendored/gitdir/config"
+  printf 'gitdir: %s/vendored/gitdir' "$PROJ" > "$PROJ/tool/.git"
+  flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  has_pair "$output" -v "$PROJ/vendored/gitdir/hooks:/home/claudeuser/project/vendored/gitdir/hooks:ro"
+  has_pair "$output" -v "$PROJ/vendored/gitdir/config:/home/claudeuser/project/vendored/gitdir/config:ro"
+}
+
+@test "project: a .git file pointing outside the project (a worktree) gets a note, and nothing outside is mounted" {
+  mkdir -p "$BATS_TEST_TMPDIR/main-repo/.git/worktrees/svc"
+  echo "gitdir: $BATS_TEST_TMPDIR/main-repo/.git/worktrees/svc" > "$PROJ/.git"
+  flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  contains "$output" "NOTE: .git points to a git directory outside the project"
+  not grep -q 'main-repo.*:ro$' <<<"$output"
+}
+
+@test "project: JAIL_RO_NESTED_DEPTH=0 also skips nested repos and submodules" {
+  mkdir -p "$PROJ/api/.git/hooks" "$PROJ/.git/modules/libs/hooks" "$PROJ/.git/hooks"
+  JAIL_RO_NESTED_DEPTH=0 flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  [ "$(grep -c ':ro$' <<<"$output")" -eq 1 ]
+  has_line "$output" "$PROJ/.git/hooks:/home/claudeuser/project/.git/hooks:ro"
 }
 
 @test "project: a JAIL_RO_NESTED_DEPTH that is not a number stops the launch" {

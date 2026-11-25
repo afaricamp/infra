@@ -113,6 +113,17 @@ launch_jailed() { run bash -c 'cd "$1" && shift && "$@"' _ "${DIR:-$PROJ}" "$REP
   not grep -q 'notes.md' <<<"$output"
 }
 
+@test "watch: settings.local.json stays writable but is reported, and so is a .mcp.json Claude creates" {
+  mkdir -p "$PROJ/.claude"
+  echo '{}' > "$PROJ/.claude/settings.local.json"
+  export STUB_RUN_EFFECT='echo "{\"hooks\":{}}" > .claude/settings.local.json; echo "{}" > .mcp.json'
+  launch
+  [ "$status" -eq 0 ]
+  contains "$output" "changed  .claude/settings.local.json"
+  contains "$output" "created  .mcp.json"
+  not grep -q 'settings.local.json:ro$' <<<"$(run_args)"
+}
+
 @test "watch: a file is listed once, even where 'makefile' and 'Makefile' are the same file (macOS)" {
   echo 'all:' > "$PROJ/Makefile"
   export STUB_RUN_EFFECT='echo changed >> Makefile'
