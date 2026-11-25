@@ -67,6 +67,26 @@ for f in devcontainers/*/devcontainer.json; do
   fi
 done
 
+# Workflows: every action pinned to a full commit SHA (a tag can be moved to
+# other code), and actions/checkout never leaves the token in .git/config.
+while IFS= read -r line; do
+  file="${line%%:*}"
+  ref="$(printf '%s\n' "${line#*:}" | sed -E 's/.*uses:[[:space:]]*([^[:space:]#]+).*/\1/')"
+  case "$ref" in
+    ./*) ok "uses $ref (local action)" ;;
+    *) if printf '%s\n' "${ref##*@}" | grep -qE '^[0-9a-f]{40}$'; then
+         ok "uses $ref ($file)"
+       else
+         bad "uses $ref is not pinned to a commit SHA ($file)"
+       fi ;;
+  esac
+done < <(grep -H -E '^[[:space:]]*(-[[:space:]]*)?uses:' .github/workflows/*.yml)
+for f in .github/workflows/*.yml; do
+  checkouts="$(grep -c 'uses: actions/checkout@' "$f" || true)"
+  persist="$(grep -c 'persist-credentials: false' "$f" || true)"
+  check "$f: every checkout sets persist-credentials: false ($persist/$checkouts)" [ "$checkouts" -eq "$persist" ]
+done
+
 # The devkit plugin follows devkit/README.md: names, descriptions, no fields
 # that run things without a prompt, links that resolve, enough eval cases.
 python3 tests/lib/skills.py devkit || fail=1

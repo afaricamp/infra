@@ -85,7 +85,7 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make personal-skills [SRC=<dir>]` | Copy your own Claude skills (`~/.claude/skills` by default) to `personal-skills/`, which the jail loads read-only (see [Skills](#skills)) |
 | `make fix-volumes` | Repair ownership and SELinux labels of the Claude volumes (see [Troubleshooting](#troubleshooting)) |
 | `make verify` | Check binary, images, socket, aliases, egress and DNS leaks |
-| `make lint` | shellcheck + hadolint, run in containers |
+| `make lint` | shellcheck, hadolint, actionlint and zizmor, run in containers |
 | `make test` | Static checks + unit tests (fast, starts no real jail) |
 | `make test-static` / `test-unit` / `test-integration` | One test level (see [Tests](#tests)) |
 | `make test-all` | All three levels |
@@ -222,17 +222,25 @@ Which one to use:
 
 ## Tests
 
-Three levels, from cheap to thorough. CI runs all of them on every push (`.github/workflows/tests.yml`).
+Three levels, from cheap to thorough. CI runs all of them on every push and pull request, and once a week (`.github/workflows/tests.yml`).
 
 | Level | Command | Needs | What it covers |
 |---|---|---|---|
-| 1. Static | `make test-static` | podman (or `ENGINE=docker`), python3 | shellcheck, hadolint, and repo policies: fully qualified base images, every `devcontainer.json` parses and keeps its hardening flags and installs nothing automatically, every `make` target the README lists exists, the devkit skills follow `devkit/README.md` |
+| 1. Static | `make test-static` | podman (or `ENGINE=docker`), python3 | shellcheck, hadolint, actionlint, zizmor, and repo policies: every GitHub Action pinned to a commit SHA and checked out without persisted credentials, fully qualified base images, every `devcontainer.json` parses and keeps its hardening flags and installs nothing automatically, every `make` target the README lists exists, the devkit skills follow `devkit/README.md` |
 | 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers, `setup-egress.sh`, the personal skills mount, the Makefile targets (`devcontainer`, `ai-sessions`, `personal-skills`, `aliases`, `verify`, `fix-volumes`) and `dev.sh` |
 | 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits, read-only host-executed paths and personal skills, Node and npm inside the jail, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak) and each dev container run with its own `devcontainer.json` |
 
 `make test` runs levels 1 and 2 and works anywhere with podman, macOS included (`ENGINE=docker` also works for these two levels). `make test-unit BATS=bats` uses a local bats instead of the container; on a Mac, `env PATH=/usr/bin:/bin:/usr/sbin:/sbin "$(command -v bats)" tests/unit` runs them with the stock macOS tools, as CI does.
 
 The integration tests are safe on your workstation: everything they create is named `claudetest-*` or tagged `:test`, so your volumes, login, proxy, networks and images are never touched, and the jail image is built with a stub (`tests/integration/fixtures/claude-stub`) instead of the real binary. Pick files with `TESTS=`, e.g. `make test-integration TESTS=tests/integration/volumes.bats`; `DC_TYPES_UNDER_TEST=go` limits the dev containers, `JAIL_TEST_OFFLINE=1` skips the egress tests.
+
+### CI
+
+- **`tests.yml`** runs the three levels on every push and pull request, plus the unit tests and policies with the tools a Mac ships. It also runs every Monday, so a floating base image tag (`golang:1.27`, `node:24`, `php:8.4`, `ubuntu:24.04`) or a runner update that breaks a build shows up even when nothing was pushed.
+- **`claude-real.yml`** builds the jail with the real Claude Code binary, the latest release from the official installer, instead of the stub ([tests/ci/claude-smoke.sh](tests/ci/claude-smoke.sh)). It checks that the binary runs, that the launcher starts it with all its mounts, that the devkit passes `claude plugin validate`, and that every skill in `devkit/skills` loads. It needs no account, API key or secret. It runs weekly, by hand, and when `claude-jail/`, `devkit/`, the Makefile or `tests/ci/` change. Because of that path filter, do not make it a required check. Locally: `tests/ci/claude-smoke.sh` (on macOS, `SMOKE_TMPDIR=<a dir the machine shares>`).
+- **Dependabot** updates the SHA-pinned actions once a week, in one grouped PR.
+
+For the checks to protect `main`, add a branch ruleset that requires the `tests.yml` jobs to pass before merging. All of this is free on a public repository; a private one spends Actions minutes (macOS minutes count ten times).
 
 SELinux tests skip themselves unless SELinux is enforcing, which is never the case on GitHub's runners: **run `make test-integration` on an enforcing host** to cover the SELinux labels: the login bug, and two containers writing to the same project at once (which with `:Z` would cut the first one off). Two things are not automated at all and stay manual: logging in to Claude for real, and JetBrains Gateway.
 
