@@ -1,7 +1,10 @@
 # Runs the three test levels (see README, "Tests").
-#   static, unit       fast; every push and pull request
+#   static, unit       fast; every pull request and every push to main
 #   unit-macos         the unit tests with the tools a Mac ships
 #   integration-*      real rootless podman on the runner; after the fast ones
+# A branch with an open PR runs once, through pull_request; a push to
+# another branch without a PR runs nothing (open a PR or use
+# workflow_dispatch).
 # Also weekly, so drift in the floating base image tags (golang, node, php,
 # ubuntu) or in the runner image shows up even when nothing was pushed.
 # SELinux is not available on GitHub's Ubuntu runners: the SELinux tests skip
@@ -10,6 +13,7 @@ name: tests
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
   schedule:

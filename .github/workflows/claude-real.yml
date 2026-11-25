@@ -3,9 +3,10 @@
 # through the launchers and load the devkit plugin. No account, no API key,
 # no secrets. See tests/ci/claude-smoke.sh.
 #
-# Weekly, by hand, and when the jail, the devkit or this check change. It is
-# path-filtered, so do not make it a required status check: a PR that touches
-# none of these paths would never get it and could not merge.
+# Weekly, by hand, and when the jail, the devkit or this check change (in a
+# pull request, or on main). It is path-filtered, so do not make it a
+# required status check: a PR that touches none of these paths would never
+# get it and could not merge.
 name: claude-real
 
 on:
@@ -13,6 +14,7 @@ on:
     - cron: "41 5 * * 1"   # Mondays 05:41 UTC
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - "claude-jail/**"
       - "devkit/**"

@@ -222,7 +222,7 @@ Which one to use:
 
 ## Tests
 
-Three levels, from cheap to thorough. CI runs all of them on every push and pull request, and once a week (`.github/workflows/tests.yml`).
+Three levels, from cheap to thorough. CI runs all of them on every pull request and every push to `main`, and once a week (`.github/workflows/tests.yml`).
 
 | Level | Command | Needs | What it covers |
 |---|---|---|---|
@@ -236,7 +236,7 @@ The integration tests are safe on your workstation: everything they create is na
 
 ### CI
 
-- **`tests.yml`** runs the three levels on every push and pull request, plus the unit tests and policies with the tools a Mac ships. It also runs every Monday, so a floating base image tag (`golang:1.27`, `node:24`, `php:8.4`, `ubuntu:24.04`) or a runner update that breaks a build shows up even when nothing was pushed.
+- **`tests.yml`** runs the three levels on every pull request and every push to `main` (a branch with an open PR runs once, not once for the push and once for the PR), plus the unit tests and policies with the tools a Mac ships. It also runs every Monday, so a floating base image tag (`golang:1.27`, `node:24`, `php:8.4`, `ubuntu:24.04`) or a runner update that breaks a build shows up even when nothing was pushed.
 - **`claude-real.yml`** builds the jail with the real Claude Code binary, the latest release from the official installer, instead of the stub ([tests/ci/claude-smoke.sh](tests/ci/claude-smoke.sh)). It checks that the binary runs, that the launcher starts it with all its mounts, that the devkit passes `claude plugin validate`, and that every skill in `devkit/skills` loads. It needs no account, API key or secret. It runs weekly, by hand, and when `claude-jail/`, `devkit/`, the Makefile or `tests/ci/` change. Because of that path filter, do not make it a required check. Locally: `tests/ci/claude-smoke.sh` (on macOS, `SMOKE_TMPDIR=<a dir the machine shares>`).
 - **Dependabot** updates the SHA-pinned actions once a week, in one grouped PR.
 
