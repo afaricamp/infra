@@ -12,6 +12,8 @@ export JAIL_PROXY="claudetest-proxy"
 export JAIL_PROXY_IMAGE="localhost/claudetest-egress-proxy:latest"
 export JAIL_NET_INTERNAL="claudetest-internal"
 export JAIL_NET_EGRESS="claudetest-egress"
+export JAIL_CACHE="claudetest-cache"
+export JAIL_CACHE_IMAGE="localhost/claudetest-dep-cache:latest"
 TEST_VOLUMES=(claudetest-home claudetest-gopath claudetest-gocache)
 # Your own personal-skills/ folder is never mounted into a test jail; the
 # test that needs one points this at its own.

@@ -107,11 +107,15 @@ fi
 # Domains the development allowlist would let through ('make egress-dev').
 dev_patterns="$(grep -vE '^[[:space:]]*(#|$)' allowlist-dev || true)"
 in_dev() { [ -n "$dev_patterns" ] && grep -Eiq -e "$dev_patterns" <<<"$1"; }
+# Hosts the dependency cache stands in for ('make caches', cache-nginx.conf):
+# with it, go and npm never ask the proxy for them.
+in_cache() { grep -Eiqx 'proxy\.golang\.org|sum\.golang\.org|registry\.npmjs\.org' <<<"$1"; }
 
 echo "Connections through $JAIL_PROXY $window (times in UTC, the proxy's clock):"
 tab="$(printf '\t')"
 last_cat=""
 dev_hint=0
+cache_hint=0
 deny_hint=0
 # Count per category and target, most frequent first; keep the latest time.
 while IFS="$tab" read -r cat count target seen; do
@@ -127,7 +131,8 @@ while IFS="$tab" read -r cat count target seen; do
   note=""
   if [ "$cat" = 1 ]; then
     deny_hint=1
-    if in_dev "${target%:*}"; then note="  (make egress-dev allows it)"; dev_hint=1; fi
+    if in_cache "${target%:*}"; then note="  (make caches serves it)"; cache_hint=1
+    elif in_dev "${target%:*}"; then note="  (make egress-dev allows it)"; dev_hint=1; fi
   fi
   printf '  %6d  %-40s last %s%s\n' "$count" "$target" "$seen" "$note"
 done < <(printf '%s\n' "$records" |
@@ -139,5 +144,6 @@ if [ "$deny_hint" -eq 1 ]; then
   echo
   echo "To let a denied domain through, add it to claude-jail/egress-hardening/allowlist"
   echo "(one extended regex per line) and run 'make egress' again."
-  [ "$dev_hint" -eq 0 ] || echo "The ones marked are in allowlist-dev: 'make egress-dev' allows them, with its trade-off."
+  [ "$cache_hint" -eq 0 ] || echo "Go and npm downloads ('make caches serves it') work with the strict allowlist once the dependency cache runs."
+  [ "$dev_hint" -eq 0 ] || echo "The ones marked 'make egress-dev' are in allowlist-dev: it allows them, with its trade-off."
 fi

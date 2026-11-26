@@ -9,6 +9,8 @@
 #   STUB_PROXY_RUNNING  answer to 'container inspect -f {{.State.Running}}'
 #   STUB_PROXY_IP       answer to 'container inspect' for the proxy's address
 #                       (default 10.89.0.2; set it empty for "not attached")
+#   STUB_CACHE_RUNNING  the same two, for the dependency cache ($JAIL_CACHE,
+#   STUB_CACHE_IP       default claude-cache; 10.89.0.3). Unset: no cache.
 #   STUB_NETWORKS       space-separated networks that "exist"
 #   STUB_NET_DNS        answer to 'network inspect -f {{.DNSEnabled}}' (default false)
 #   STUB_NET_RM_FAIL    set to make 'network rm' fail (a container still uses it)
@@ -54,6 +56,14 @@ case "$1 ${2:-}" in
   "volume exists")
     volume_exists "$last" ;;
   "container inspect")
+    if [ "$last" = "${JAIL_CACHE:-claude-cache}" ]; then
+      [ -n "${STUB_CACHE_RUNNING:-}" ] || exit 125
+      case "$*" in
+        *IPAddress*) echo "${STUB_CACHE_IP-10.89.0.3}" ;;
+        *) echo "$STUB_CACHE_RUNNING" ;;
+      esac
+      exit 0
+    fi
     [ -n "${STUB_PROXY_RUNNING:-}" ] || exit 125
     case "$*" in
       *IPAddress*) echo "${STUB_PROXY_IP-10.89.0.2}" ;;
@@ -85,6 +95,7 @@ case "$1 ${2:-}" in
   "machine ssh")
     printf '%s\n' "${STUB_MACHINE_MOUNTS:-}" ;;
   "container exists")
+    if [ "$last" = "${JAIL_CACHE:-claude-cache}" ]; then [ -n "${STUB_CACHE_RUNNING:-}" ]; exit; fi
     [ -n "${STUB_PROXY_RUNNING:-}" ] ;;
   logs\ *)
     if [ -n "${STUB_LOGS_ERROR:-}" ]; then
@@ -101,7 +112,7 @@ case "$1 ${2:-}" in
   "network rm")
     [ -z "${STUB_NET_RM_FAIL:-}" ] || exit 2
     [ "$log" = /dev/null ] || printf '%s\n' "$last" >> "$log.removed" ;;
-  "network create"|"network connect"|build\ *)
+  "network create"|"network connect"|build\ *|"rm -f")
     ;;
   run\ *)
     shift

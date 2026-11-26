@@ -4,9 +4,10 @@
 # its only way out. Requires ./setup-egress.sh to have been run first.
 # Run it from a single project directory under $DEV_PROJECTS.
 #
-# IMPORTANT LIMITATION: with the default allowlist only Anthropic is reachable.
-# 'go mod download', 'git clone' and 'npm install' FAIL in this mode. If you
-# need to build or clone, start the proxy with the development allowlist:
+# With the default allowlist only Anthropic is reachable. 'go mod download',
+# 'npm install', npx, pnpm and yarn work once the dependency cache runs
+# ('make caches', see setup-caches.sh); 'git clone' still fails. To clone,
+# start the proxy with the development allowlist:
 #   ALLOW_DEV=1 ./setup-egress.sh      (see allowlist-dev)
 #
 # The hardening flags, limits, mounts and guards live in claude-jail/common.sh
@@ -41,6 +42,39 @@ if [ -z "$PROXY_IP" ]; then
 fi
 
 PROXY_URL="http://$JAIL_PROXY:8888"
+NO_PROXY_HOSTS="localhost,127.0.0.1"
+
+# The dependency cache ('make caches'), when it runs: Go modules and npm
+# packages come from it, so the strict allowlist is enough to build. Optional:
+# without it, the proxy's allowlist decides as before. Reached directly, not
+# through the proxy (NO_PROXY), and found through /etc/hosts like the proxy.
+CACHE_FLAGS=()
+if podman container exists "$JAIL_CACHE" 2>/dev/null; then
+  CACHE_IP=""
+  if [ "$(podman container inspect -f '{{.State.Running}}' "$JAIL_CACHE" 2>/dev/null)" = true ]; then
+    CACHE_IP="$(podman container inspect -f \
+      "{{with index .NetworkSettings.Networks \"$JAIL_NET_INTERNAL\"}}{{.IPAddress}}{{end}}" \
+      "$JAIL_CACHE" 2>/dev/null || true)"
+  fi
+  if [ -n "$CACHE_IP" ]; then
+    NO_PROXY_HOSTS="$NO_PROXY_HOSTS,$JAIL_CACHE"
+    CACHE_NPM="http://$JAIL_CACHE:4873"
+    CACHE_FLAGS=(
+      --add-host "$JAIL_CACHE:$CACHE_IP"
+      # direct: a module the proxy does not have is fetched from its
+      # repository, which only works with the development allowlist.
+      -e GOPROXY="http://$JAIL_CACHE:3000,direct"
+      -e npm_config_registry="$CACHE_NPM/"
+      -e COREPACK_NPM_REGISTRY="$CACHE_NPM"
+      -e YARN_NPM_REGISTRY_SERVER="$CACHE_NPM"
+      -e YARN_UNSAFE_HTTP_WHITELIST="$JAIL_CACHE"
+    )
+  else
+    printf 'NOTE: the dependency cache %s is stopped or not on %s: go and npm downloads go to the proxy.\n' \
+      "$JAIL_CACHE" "$JAIL_NET_INTERNAL" >&2
+    printf '      Start it with: podman start %s (or make caches)\n' "$JAIL_CACHE" >&2
+  fi
+fi
 
 # Report the host-run files Claude changed, when the container exits.
 jail_watch_start
@@ -54,6 +88,8 @@ podman run --rm \
   -e HTTP_PROXY="$PROXY_URL" \
   -e https_proxy="$PROXY_URL" \
   -e http_proxy="$PROXY_URL" \
-  -e NO_PROXY=localhost,127.0.0.1 \
+  -e NO_PROXY="$NO_PROXY_HOSTS" \
+  -e no_proxy="$NO_PROXY_HOSTS" \
+  ${CACHE_FLAGS[@]+"${CACHE_FLAGS[@]}"} \
   "${JAIL_PROJECT_FLAGS[@]}" \
   "$JAIL_IMAGE" "$@"

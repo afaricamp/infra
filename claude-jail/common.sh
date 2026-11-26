@@ -25,6 +25,12 @@ JAIL_PROXY="${JAIL_PROXY:-claude-proxy}"
 JAIL_PROXY_IMAGE="${JAIL_PROXY_IMAGE:-claude-egress-proxy}"
 JAIL_NET_INTERNAL="${JAIL_NET_INTERNAL:-jail-internal}"
 JAIL_NET_EGRESS="${JAIL_NET_EGRESS:-jail-egress}"
+# The dependency cache of claude-jailed ('make caches'). Its volume is not one
+# of JAIL_VOLUMES: the jail never mounts it.
+JAIL_CACHE="${JAIL_CACHE:-claude-cache}"
+JAIL_CACHE_IMAGE="${JAIL_CACHE_IMAGE:-claude-dep-cache}"
+# shellcheck disable=SC2034  # used by setup-caches.sh
+JAIL_CACHE_VOLUME="$JAIL_VOLUME_PREFIX-depcache"
 
 # Root of this repo, derived from where common.sh lives (claude-jail/..).
 JAIL_INFRA="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"

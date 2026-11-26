@@ -22,7 +22,7 @@ done
 # spoofed by a registry earlier in the search list. And pinned: a tag can be
 # moved to other content, a digest cannot. 'name:tag@sha256:<index digest>',
 # the tag kept so that readers and 'make bump-images' know what it is.
-CONTAINERFILES=(claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy devcontainers/*/Containerfile tests/Containerfile)
+CONTAINERFILES=(claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy claude-jail/egress-hardening/Containerfile.cache devcontainers/*/Containerfile tests/Containerfile)
 pinned() { [[ $1 =~ ^[^@]+:[^/@]+@sha256:[0-9a-f]{64}$ ]]; }
 # image_policy WHAT IMAGE
 image_policy() {
@@ -55,6 +55,19 @@ while IFS= read -r line; do
   image="$(printf '%s\n' "$line" | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')"
   image_policy "Makefile $name = $image" "$image"
 done < <(grep -E '^[A-Z_]+[[:space:]]*:?=[[:space:]]*[a-z0-9-]+\.[a-z0-9.-]+(:[0-9]+)?/' Makefile)
+
+# The dependency cache drops Authorization and Cookie with proxy_set_header
+# at the http level. nginx only passes those down to a server or location
+# that sets none of its own: one proxy_set_header further in would quietly
+# send a project's npm token on to the registry again.
+CACHE_CONF=claude-jail/egress-hardening/cache-nginx.conf
+headers_ok=no
+if grep -qxF '  proxy_set_header Authorization "";' "$CACHE_CONF" &&
+   grep -qxF '  proxy_set_header Cookie "";' "$CACHE_CONF" &&
+   ! grep -qE '^[[:space:]]{3,}proxy_set_header' "$CACHE_CONF"; then
+  headers_ok=yes
+fi
+check "$CACHE_CONF drops Authorization and Cookie, and sets proxy headers only at the http level" [ "$headers_ok" = yes ]
 
 # Every devcontainer.json parses, names an image we build, and keeps the
 # hardening flags the README promises.

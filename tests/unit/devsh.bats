@@ -38,14 +38,16 @@ in_zsh() {
 }
 
 @test "dev.sh: aliases point at the launchers in this repo" {
-  in_devsh 'alias claude-jail; alias claude-jailed; alias claude-proxy-dev'
+  in_devsh 'alias claude-jail; alias claude-jailed; alias claude-proxy-dev; alias claude-caches'
   [ "$status" -eq 0 ]
   contains "$output" "$REPO/claude-jail/launch_claude.sh"
   contains "$output" "$REPO/claude-jail/egress-hardening/launch_claude_jailed.sh"
   contains "$output" "ALLOW_DEV=1 $REPO/claude-jail/egress-hardening/setup-egress.sh"
+  contains "$output" "$REPO/claude-jail/egress-hardening/setup-caches.sh"
   [ -x "$REPO/claude-jail/launch_claude.sh" ]
   [ -x "$REPO/claude-jail/egress-hardening/launch_claude_jailed.sh" ]
   [ -x "$REPO/claude-jail/egress-hardening/setup-egress.sh" ]
+  [ -x "$REPO/claude-jail/egress-hardening/setup-caches.sh" ]
 }
 
 @test "newproj: rejects names that are not a plain directory name" {

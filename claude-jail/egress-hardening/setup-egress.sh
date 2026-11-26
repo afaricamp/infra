@@ -13,9 +13,10 @@
 # 4.4+ with the netavark/aardvark-dns network stack (podman's default today).
 #
 # ALLOW_DEV=1 appends 'allowlist-dev' (Go modules, GitHub, npm) to the
-# allowlist. Without it, jailed mode can only reach Anthropic: 'go mod
-# download' and 'git clone' fail. See allowlist-dev for the security
-# trade-off.
+# allowlist. Without it, jailed mode can only reach Anthropic: 'git clone'
+# fails, and so do 'go mod download' and 'npm install' unless the dependency
+# cache runs ('make caches', setup-caches.sh). See allowlist-dev for the
+# security trade-off.
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
@@ -47,7 +48,7 @@ if podman network exists "$JAIL_NET_INTERNAL" &&
   podman rm -f "$JAIL_PROXY" >/dev/null 2>&1 || true
   podman network rm "$JAIL_NET_INTERNAL" >/dev/null ||
     jail_die "could not remove $JAIL_NET_INTERNAL: is a jailed Claude still running on it?" \
-      "Stop it ('podman ps' lists it) and run this again."
+      "Stop it ('podman ps' lists it), and the dependency cache ('make caches-down'), and run this again."
 fi
 podman network exists "$JAIL_NET_INTERNAL" || \
   podman network create --internal --disable-dns "$JAIL_NET_INTERNAL"
