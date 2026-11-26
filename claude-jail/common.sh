@@ -167,11 +167,29 @@ JAIL_RO_NESTED_DEPTH="${JAIL_RO_NESTED_DEPTH:-4}"
 
 # jail_ro_add REL: mount the project's REL read-only, if it exists and is not
 # mounted yet. Uses jail_project_flags's locals 'here' and 'seen'.
+# REL can be a symlink, or go through one: Claude can leave one in the
+# project for the next launch (.idea -> somewhere). The mount source follows
+# it on the host, while crun refuses a target that is a symlink inside the
+# container, so podman would either fail to start or mount whatever the link
+# points to. The path is resolved first: what it points to inside the project
+# is mounted at its real place, and anything that leads out of the project
+# (also a '..') is not mounted at all, with a note.
 jail_ro_add() {
+  local real rel
+  case "/$1/" in
+    */../*) jail_die "the read-only path '$1' leads out of the project." \
+      "Check JAIL_RO_PATHS, or ro_paths in the project's profile." ;;
+  esac
   [ -e "$here/$1" ] || return 0
-  case "$seen" in *" $1 "*) return 0 ;; esac
-  JAIL_PROJECT_FLAGS+=(-v "$here/$1":"/home/claudeuser/project/$1":ro)
-  seen="$seen$1 "
+  real="$(readlink -f "$here/$1")"
+  case "$real/" in
+    "$here"/?*) rel="${real#"$here"/}" ;;
+    *) printf 'NOTE: %s leads out of the project (to %s): not mounted in the jail.\n' "$1" "$real" >&2
+       return 0 ;;
+  esac
+  case "$seen" in *" $rel "*) return 0 ;; esac
+  seen="$seen$rel "
+  JAIL_PROJECT_FLAGS+=(-v "$real":"/home/claudeuser/project/$rel":ro)
 }
 
 # jail_ro_gitfile REL: REL is a .git file ('gitdir: <path>'). Protect the hooks
