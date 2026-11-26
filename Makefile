@@ -23,7 +23,7 @@ CLAUDE_JAIL   := $(CURDIR)/claude-jail
 DEVCONTAINERS := $(CURDIR)/devcontainers
 # Same file the devkit skills use when a project has no .ai-sessions/ yet.
 AI_SESSIONS_TEMPLATE := $(CURDIR)/devkit/templates/ai-sessions/README.md
-UBUNTU        := docker.io/library/ubuntu:24.04
+UBUNTU        := docker.io/library/ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
 # Linux or Darwin. On macOS podman is a client for the podman machine VM.
 OS            := $(shell uname -s)
 
@@ -63,9 +63,11 @@ ENGINE         ?= podman
 BATS           ?=
 BATS_IMAGE     := localhost/dev-infra-bats:latest
 TESTS          ?= tests/integration
-SHELLCHECK     := docker.io/koalaman/shellcheck:v0.10.0
-HADOLINT       := docker.io/hadolint/hadolint:v2.12.0
-SCRIPTS        := dev.sh doctor.sh claude-jail/common.sh claude-jail/launch_claude.sh \
+SHELLCHECK     := docker.io/koalaman/shellcheck:v0.10.0@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb
+HADOLINT       := docker.io/hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e
+# Reads image digests from the registries for 'make bump-images'.
+SKOPEO         := quay.io/skopeo/stable:v1.25.1@sha256:4784191278912fc8e8dd914fd28e65540c499798d59f688f97c7e1a22a259d38
+SCRIPTS        := dev.sh doctor.sh bump-images.sh claude-jail/common.sh claude-jail/launch_claude.sh \
                   claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh \
                   claude-jail/egress-hardening/setup-egress.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
@@ -86,7 +88,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
         build build-claude build-go build-php build-react build-vue egress egress-dev \
-        aliases devcontainer ai-sessions personal-skills fix-volumes verify doctor lint clean-images \
+        aliases devcontainer ai-sessions personal-skills fix-volumes verify doctor bump-images lint clean-images \
         test test-static test-unit test-integration test-all
 
 help: ## Show this help
@@ -346,6 +348,13 @@ doctor: ## Check the whole setup and print the fix for every problem (changes no
 	@DEV_PROJECTS="$(DEV_PROJECTS)" JAIL_IMAGE="$(JAIL_IMAGE)" JAIL_VOLUME_PREFIX="$(JAIL_VOLUME_PREFIX)" \
 	 JAIL_PROXY="$(JAIL_PROXY)" JAIL_NET_INTERNAL="$(JAIL_NET_INTERNAL)" CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" \
 	 "$(CURDIR)/doctor.sh"
+
+# Every FROM, COPY --from and tool image above is 'name:tag@sha256:...'
+# (tests/static/policy.sh checks it). This re-resolves the tags and rewrites
+# the digests that changed; nothing else picks up a new base image.
+bump-images: ## Pin every base image to the digest its tag points to now (review with git diff)
+	@ENGINE="$(ENGINE)" SKOPEO="$(SKOPEO)" "$(CURDIR)/bump-images.sh" \
+	 Makefile $(CONTAINERFILES) tests/Containerfile
 
 lint: ## Run shellcheck and hadolint (in containers; nothing installed on the host)
 	$(ENGINE) run --rm --security-opt label=disable -v "$(CURDIR)":/mnt:ro -w /mnt \

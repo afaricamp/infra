@@ -31,6 +31,10 @@
 #   STUB_RUN_EFFECT     shell snippet run in the current directory, as if
 #                       Claude had changed the project (e.g. 'echo x >> Makefile')
 #   STUB_RUN_EXIT       its exit status (default 0)
+#   skopeo for bump-images.sh ('podman run ... inspect --raw docker://<ref>'):
+#   STUB_MANIFESTS      directory with the raw manifest of each ref, in a file
+#                       named after the ref with '/' as '_'; no file = the
+#                       registry does not know the tag
 log="${STUB_LOG:-/dev/null}"
 printf '%s\n' "$*" >> "$log"
 last="${*: -1}"
@@ -93,6 +97,15 @@ case "$1 ${2:-}" in
   run\ *)
     shift
     case " $* " in
+      *" inspect --raw docker://"*)
+        ref="${last#docker://}"
+        manifest="${STUB_MANIFESTS:-/nonexistent}/$(printf '%s' "$ref" | tr '/' '_')"
+        if [ ! -f "$manifest" ]; then
+          echo "FATA[0000] Error parsing image name 'docker://$ref': reading manifest: manifest unknown" >&2
+          exit 1
+        fi
+        cat "$manifest"
+        exit 0 ;;
       *" --entrypoint stat "*)
         [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.check"
         if [ -n "${STUB_CHECK_FAIL:-}" ]; then

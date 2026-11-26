@@ -19,7 +19,7 @@
 # Do not build it with your own UID: the mapping would no longer line up.
 #   podman build -t localhost/devcontainer-vue:latest .
 # =============================================================================
-FROM docker.io/library/node:24-bookworm
+FROM docker.io/library/node:24-bookworm@sha256:49f7adaf9f1574bc45c20ea317139b39a59d7e758d0e93745e112fd85cb42623
 
 ARG USER_ID=1000
 ARG GROUP_ID=1000
