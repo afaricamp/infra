@@ -13,9 +13,10 @@ guard() {
   run bash -c 'cd "$1" && source "$2" && jail_guard && echo PASSED' _ "$1" "${2:-$COMMON}"
 }
 
-# flags NAME [DIR] [COMMON]: print the array NAME after sourcing common.sh in DIR.
+# flags NAME [DIR] [COMMON]: print the array NAME after sourcing common.sh in
+# DIR and running what the launchers run before the volume check.
 flags() {
-  run bash -c 'cd "$1" && source "$2" && jail_project_flags && eval "printf \"%s\n\" \"\${$3[@]}\""' \
+  run bash -c 'cd "$1" && source "$2" && jail_settings && jail_project_flags && eval "printf \"%s\n\" \"\${$3[@]}\""' \
     _ "${2:-$PROJ}" "${3:-$COMMON}" "$1"
 }
 

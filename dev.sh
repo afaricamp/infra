@@ -46,6 +46,7 @@ alias claude-jail="$DEV_CLAUDE_JAIL/launch_claude.sh"                           
 alias claude-proxy="$DEV_CLAUDE_JAIL/egress-hardening/setup-egress.sh"           # strict allowlist proxy
 alias claude-proxy-dev="ALLOW_DEV=1 $DEV_CLAUDE_JAIL/egress-hardening/setup-egress.sh"  # + Go/GitHub/npm
 alias claude-jailed="$DEV_CLAUDE_JAIL/egress-hardening/launch_claude_jailed.sh"  # proxy-only egress
+alias claude-profile='make -C "$DEV_INFRA" --no-print-directory profile PROJECT="$PWD"'  # this project's settings
 
 # --- Build dev container images (delegates to the Makefile) ---
 alias dc-build-go='make -C "$DEV_INFRA" build-go'

@@ -18,11 +18,13 @@ set -euo pipefail
 source "$(dirname "$(readlink -f "$0")")/common.sh"
 
 jail_guard
+jail_settings
 jail_check_volumes
 jail_project_flags
 
 # Network: by default, whatever your podman uses for rootless containers
-# (pasta on podman >= 5, slirp4netns before). Force one with JAIL_NETWORK.
+# (pasta on podman >= 5, slirp4netns before). Force one with JAIL_NETWORK, or
+# network in the project's profile (jail_settings checks it).
 # Either way this mode has a normal route out: the internet and your LAN.
 NETWORK_FLAGS=()
 [ -n "${JAIL_NETWORK:-}" ] && NETWORK_FLAGS=(--network "$JAIL_NETWORK")

