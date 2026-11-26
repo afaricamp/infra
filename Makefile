@@ -18,6 +18,8 @@ override PROJECT := $(value PROJECT)
 override TYPE    := $(value TYPE)
 override FORCE   := $(value FORCE)
 override SRC     := $(value SRC)
+override SINCE   := $(value SINCE)
+override FOLLOW  := $(value FOLLOW)
 
 CLAUDE_JAIL   := $(CURDIR)/claude-jail
 DEVCONTAINERS := $(CURDIR)/devcontainers
@@ -69,7 +71,7 @@ HADOLINT       := docker.io/hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176ee
 SKOPEO         := quay.io/skopeo/stable:v1.25.1@sha256:4784191278912fc8e8dd914fd28e65540c499798d59f688f97c7e1a22a259d38
 SCRIPTS        := dev.sh doctor.sh bump-images.sh claude-jail/common.sh claude-jail/launch_claude.sh \
                   claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh \
-                  claude-jail/egress-hardening/setup-egress.sh \
+                  claude-jail/egress-hardening/setup-egress.sh claude-jail/egress-hardening/egress-log.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
                   tests/static/policy.sh tests/ci/setup-rootless-podman.sh \
                   tests/unit/stubs/podman \
@@ -87,7 +89,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .DEFAULT_GOAL := help
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
-        build build-claude build-go build-php build-react build-vue egress egress-dev \
+        build build-claude build-go build-php build-react build-vue egress egress-dev egress-log \
         aliases devcontainer ai-sessions personal-skills fix-volumes verify doctor bump-images lint clean-images \
         test test-static test-unit test-integration test-all
 
@@ -203,6 +205,12 @@ egress: ## Start the egress allowlist proxy (strict: Anthropic only)
 
 egress-dev: ## Same as 'egress' but also allowing Go modules, GitHub and npm
 	ALLOW_DEV=1 "$(CLAUDE_JAIL)/egress-hardening/setup-egress.sh"
+
+# SINCE goes through shquote: whatever you type stays one argument.
+egress-log: ## What the egress proxy allowed and denied, per domain (SINCE=1h, FOLLOW=1 to watch live)
+	@since=$(call shquote,SINCE); \
+	 JAIL_PROXY="$(JAIL_PROXY)" "$(CLAUDE_JAIL)/egress-hardening/egress-log.sh" \
+	   $${since:+--since "$$since"} $(if $(FOLLOW),--follow)
 
 # The installed copy starts with a 3-line header that pins this checkout and
 # the projects directory, so the repo can live anywhere. 'verify' compares the

@@ -77,6 +77,22 @@ via_proxy() {
   contains "$output" " 200 "
 }
 
+@test "make egress-log sums up what the real proxy allowed, filtered and refused" {
+  via_proxy api.anthropic.com:443
+  via_proxy example.com:443
+  via_proxy example.com:443
+  via_proxy api.anthropic.com:22
+  run "$REPO/claude-jail/egress-hardening/egress-log.sh"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  # Each line under its heading: the groups come in this order.
+  awk '/^Denied, not on the allowlist:/ { d = 1 } d && /^ +[0-9]+  example\.com:443 / { ok = 1 } END { exit !ok }' <<<"$output"
+  awk '/^Denied, a port other than 443:/ { d = 1 } /^Failed|^Allowed:/ { d = 0 } d && /api\.anthropic\.com:22 / { ok = 1 } END { exit !ok }' <<<"$output"
+  awk '/^Allowed:/ { d = 1 } d && /api\.anthropic\.com:443 / { ok = 1 } END { exit !ok }' <<<"$output"
+  # The proxy's config is accepted as it is: no deprecated options.
+  not grep -q '^WARNING' < <(podman logs "$JAIL_PROXY" 2>&1)
+}
+
 @test "npm reaches the registry only with the development allowlist" {
   # Strict allowlist: the proxy refuses registry.npmjs.org.
   jail_jailed npm view --fetch-retries=0 vue version

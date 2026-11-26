@@ -60,8 +60,11 @@ podman network exists "$JAIL_NET_EGRESS" || \
 podman build -t "$JAIL_PROXY_IMAGE" -f Containerfile.proxy .
 
 # 4) Start the proxy on the egress network first, so its resolv.conf points
-#    at that network's DNS (the internal one has none)
+#    at that network's DNS (the internal one has none). Its log is the record
+#    of every connection ('make egress-log'): capped where podman writes it to
+#    a file (journald rotates on its own and ignores the option).
 podman run -d --replace --name "$JAIL_PROXY" \
+  --log-opt max-size=10m \
   --userns keep-id:uid=1000,gid=1000 \
   --security-opt no-new-privileges \
   --cap-drop ALL \
