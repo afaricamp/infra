@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # Integration: other agents in the jail. A stand-in agent
 # (fixtures/agents/probe, whose entrypoint runs its arguments) for the jail
-# around it, normal and jailed; and the real Aider from agents/aider, built
-# from its lockfile, with a fake key, through its own proxy to Anthropic.
+# around it, normal and jailed; and the real Aider and Codex from agents/,
+# built from their lockfiles, with fake keys, through their own proxies to
+# Anthropic and OpenAI.
 
 load helpers
 
@@ -24,7 +25,7 @@ teardown_file() {
   done
   podman rm -f "$JAIL_PROXY" >/dev/null 2>&1 || true
   podman network rm -f "$JAIL_NET_INTERNAL" "$JAIL_NET_EGRESS" >/dev/null 2>&1 || true
-  for p in claudetest-probe-state claudetest-aider-home claudetest-aider-cache; do
+  for p in claudetest-probe-state claudetest-aider-home claudetest-aider-cache claudetest-codex-home; do
     podman volume rm -f "$p" >/dev/null 2>&1 || true
   done
 }
@@ -94,4 +95,46 @@ setup() {
   echo "$output"
   grep -q '"authentication_error"' <<<"$output"
   grep -q '"request_id":"req_' <<<"$output"
+}
+
+@test "agents/codex: built from its lockfile, it runs in the jail; jailed, it reaches OpenAI through its own proxy, and nothing else" {
+  export JAIL_AGENTS_DIR="$REPO/agents" JAIL_AGENT=codex JAIL_AGENT_IMAGE="localhost/claudetest-agent-codex:test"
+  podman build -q -t "$JAIL_AGENT_IMAGE" "$REPO/agents/codex" >/dev/null
+  jail --version
+  echo "$output"
+  [ "$status" -eq 0 ]
+  grep -q '^codex-cli 0\.' <<<"$output"
+
+  [ "${JAIL_TEST_OFFLINE:-0}" != 1 ] || skip "JAIL_TEST_OFFLINE=1"
+  # A fake key, from its key file: OpenAI answers that it is invalid, which
+  # it can only do if the request got there.
+  export JAIL_AGENT_ENV_DIR="$(dirname "$DEV_PROJECTS")/agent-env"
+  mkdir -p "$JAIL_AGENT_ENV_DIR"
+  (umask 077 && echo 'CODEX_API_KEY=sk-not-a-real-key' > "$JAIL_AGENT_ENV_DIR/codex.env")
+  # codex exec also reads stdin when it is not a terminal: give it none.
+  jail_jailed exec --skip-git-repo-check "say hi" </dev/null
+  echo "$output"
+  # It gives up after its retries, with OpenAI's answer.
+  [ "$status" -ne 0 ]
+  contains "$output" "Incorrect API key provided: sk-not-a"
+  # Its proxy saw OpenAI and nothing else: no GitHub, chatgpt.com or analytics.
+  local proxy; proxy="$(sed -nE "s/^Proxy: ($JAIL_PROXY-[0-9a-f]{12}), .*/\1/p" <<<"$output")"
+  [ -n "$proxy" ]
+  run env JAIL_PROXY="$proxy" "$REPO/claude-jail/egress-hardening/egress-log.sh"
+  echo "$output"
+  contains "$output" "api.openai.com:443"
+  not grep -qiE 'github|chatgpt' <<<"$output"
+}
+
+@test "agents/codex: its own login, saved with --with-api-key, stays in its volume" {
+  export JAIL_AGENTS_DIR="$REPO/agents" JAIL_AGENT=codex JAIL_AGENT_IMAGE="localhost/claudetest-agent-codex:test"
+  podman image exists "$JAIL_AGENT_IMAGE" || podman build -q -t "$JAIL_AGENT_IMAGE" "$REPO/agents/codex" >/dev/null
+  run bash -c 'cd "$1" && printf %s sk-not-a-real-key | "$2" login --with-api-key' _ "$PROJ" "$REPO/claude-jail/launch_claude.sh"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  contains "$output" "API key saved."
+  # The next session, a new container, still has it.
+  jail login status </dev/null
+  echo "$output"
+  not grep -q "Not logged in" <<<"$output"
 }

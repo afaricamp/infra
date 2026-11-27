@@ -1,0 +1,9 @@
+{
+  "name": "codex-jail",
+  "private": true,
+  "description": "Codex for the jail; see agents/README.md",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@openai/codex": "0.172.0"
+  }
+}

@@ -1,0 +1,4 @@
+# Hosts Codex's jail may reach with 'agent-jailed codex', one tinyproxy
+# pattern per line: OpenAI's API. Signing in with a ChatGPT account instead
+# of an API key also needs chatgpt.com (not tried in the jail).
+(^|\.)openai\.com$
