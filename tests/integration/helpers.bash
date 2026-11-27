@@ -25,6 +25,8 @@ export JAIL_PROFILES_DIR="/nonexistent/jail-profiles"
 export JAIL_SECRETS_DIR="/nonexistent/jail-secrets"
 # Nor your snapshots.
 export JAIL_SNAPSHOTS_DIR="/nonexistent/jail-snapshots"
+# Nor the key files of your agents.
+export JAIL_AGENT_ENV_DIR="/nonexistent/agent-env"
 
 require_podman() {
   command -v podman >/dev/null || skip "podman not installed"

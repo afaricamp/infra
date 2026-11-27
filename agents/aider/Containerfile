@@ -1,0 +1,48 @@
+# =============================================================================
+# Aider (https://github.com/Aider-AI/aider, Apache-2.0) in the jail: the same
+# hardening, project mount and egress proxy as Claude, its own image. Built
+# by 'make build-agent AGENT=aider'; run with 'agent-jail aider' (see
+# agents/README.md).
+#
+# aider-chat and each of its dependencies come from requirements.txt, at an
+# exact version, checked against the hashes in it, and as wheels only, so no
+# package's setup code runs while the image is built. To move to a new
+# version: agents/README.md, "Updating an agent".
+# =============================================================================
+FROM docker.io/library/python:3.12-slim-bookworm@sha256:44cf1793efa7c7a476bb0f2cff81443f4a072c90c1cb127e2924933daa3e8c64
+
+# git: Aider works on the project's repository and commits what it changes.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ca-certificates \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /opt/aider/requirements.txt
+RUN python -m venv /opt/aider && \
+    /opt/aider/bin/pip install --no-cache-dir --disable-pip-version-check \
+      --require-hashes --only-binary :all: -r /opt/aider/requirements.txt && \
+    /opt/aider/bin/aider --version
+ENV PATH="/opt/aider/bin:${PATH}"
+
+# Nothing Aider would fetch on its own: no analytics, no version check, no
+# release notes, and litellm's own copy of the model list instead of GitHub's.
+# The proxy refuses those hosts anyway; this keeps it quiet. Aider itself
+# still asks GitHub for that list once a day (it says so, and caches an
+# empty answer in ~/.aider): there is no switch for it.
+ENV AIDER_ANALYTICS_DISABLE=true \
+    AIDER_CHECK_UPDATE=false \
+    AIDER_SHOW_RELEASE_NOTES=false \
+    LITELLM_LOCAL_MODEL_COST_MAP=True
+
+# UID 1000, like the Claude jail: the launcher maps you onto it (keep-id).
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+RUN groupadd -g ${GROUP_ID} agent && \
+    useradd -l -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash agent
+USER agent
+WORKDIR /home/agent
+RUN mkdir -p project tmp .aider .cache
+WORKDIR /home/agent/project
+
+ENTRYPOINT ["aider"]

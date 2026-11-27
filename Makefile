@@ -24,6 +24,7 @@ override NAME    := $(value NAME)
 override MCP     := $(value MCP)
 override VARIANT := $(value VARIANT)
 override SNAPSHOT := $(value SNAPSHOT)
+override AGENT   := $(value AGENT)
 
 CLAUDE_JAIL   := $(CURDIR)/claude-jail
 DEVCONTAINERS := $(CURDIR)/devcontainers
@@ -51,6 +52,8 @@ JAIL_MCP_PREFIX    ?= claude-mcp
 JAIL_MCP_DIR       ?= $(CURDIR)/mcp
 JAIL_SECRETS_DIR   ?= $(HOME)/.config/dev-infra/secrets
 JAIL_SNAPSHOTS_DIR ?= $(HOME)/.local/share/dev-infra/snapshots
+JAIL_AGENTS_DIR    ?= $(CURDIR)/agents
+JAIL_AGENT_ENV_DIR ?= $(HOME)/.config/dev-infra/agents
 
 # Where your projects live: the only directories the Claude jail may be
 # launched from. Baked into the installed dev.sh by 'make aliases'.
@@ -58,6 +61,8 @@ DEV_PROJECTS  ?= $(HOME)/dev/projects
 
 # The MCP server definitions in mcp/ (one folder each), for clean-images.
 MCP_NAMES     := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(CURDIR)/mcp/*/mcp.conf)))))
+# The other agents in agents/ (one folder each), for build-agent and clean-images.
+AGENT_NAMES   := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(CURDIR)/agents/*/agent.conf)))))
 
 # Claude Code version to download: latest (default) or e.g. VERSION=x.y.z
 VERSION       ?= latest
@@ -70,7 +75,7 @@ DC_TYPES      := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(DEVCONTAINER
 # '$(...)' inside them (even run '$(shell ...)') when it references or exports
 # them, so they are never exported and only read raw, through $(value), and
 # single-quoted for the shell: a path is just a path.
-unexport PROJECT TYPE FORCE SRC NAME MCP VARIANT SNAPSHOT
+unexport PROJECT TYPE FORCE SRC NAME MCP VARIANT SNAPSHOT AGENT
 shquote = '$(subst ','\'',$(value $(1)))'
 
 # Tests and linters. Linters and the unit tests run in containers so nothing
@@ -97,6 +102,7 @@ SCRIPTS        := dev.sh doctor.sh bump-images.sh claude-jail/common.sh claude-j
 CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy \
                   claude-jail/egress-hardening/Containerfile.cache \
                   $(wildcard devcontainers/*/Containerfile) $(wildcard mcp/*/Containerfile) \
+                  $(wildcard agents/*/Containerfile) $(wildcard tests/integration/fixtures/agents/*/Containerfile) \
                   $(wildcard tests/integration/fixtures/mcp/*/Containerfile)
 
 # Several targets are order-dependent ('all' downloads before it builds,
@@ -111,7 +117,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
         force-download-claude update-claude \
         build build-claude build-go build-php build-react build-vue egress egress-dev egress-log \
         caches caches-down egress-prune mcp-up mcp-down mcp-list \
-        aliases devcontainer ai-sessions profile secrets snapshots restore-snapshot personal-skills fix-volumes verify doctor bump-images lint clean-images \
+        aliases devcontainer ai-sessions profile secrets snapshots restore-snapshot build-agent agent-env personal-skills fix-volumes verify doctor bump-images lint clean-images \
         test test-static test-unit test-integration test-all
 
 help: ## Show this help
@@ -222,6 +228,32 @@ build-claude: ## Build the Claude jail images: full, go, node, php, or VARIANT=<
 	   echo ">> $$v: $$img"; \
 	   podman build --build-arg VARIANT=$$v -t "$$img" "$(CLAUDE_JAIL)" || exit 1; \
 	 done
+
+# Another agent's image, from agents/<AGENT>/ (see agents/README.md):
+# localhost/<AGENT>-jail:latest, what the launchers run with JAIL_AGENT=<AGENT>.
+# JAIL_AGENTS_DIR and JAIL_AGENT_IMAGE are for the tests.
+build-agent: ## Build another agent's jail image. Usage: make build-agent AGENT=<name> (see agents/)
+	@agent=$(call shquote,AGENT); \
+	 if [ -z "$$agent" ]; then echo "ERROR: AGENT missing. Usage: make build-agent AGENT=<$(shell echo '$(AGENT_NAMES)' | tr ' ' '|')>"; exit 1; fi; \
+	 case "$$agent" in *[!a-z0-9-]*|-*|*-) echo "ERROR: '$$agent' is not an agent name"; exit 1;; esac; \
+	 if [ ! -f "$(JAIL_AGENTS_DIR)/$$agent/agent.conf" ]; then echo "ERROR: there is no agent '$$agent' in $(JAIL_AGENTS_DIR). Available: $(AGENT_NAMES)"; exit 1; fi; \
+	 img="$${JAIL_AGENT_IMAGE:-localhost/$$agent-jail:latest}"; \
+	 echo ">> $$agent: $$img"; \
+	 podman build -t "$$img" "$(JAIL_AGENTS_DIR)/$$agent"
+
+# A private file for another agent's own API key ('NAME=value' lines), which
+# only that agent's jail gets (--env-file). An existing one is kept.
+agent-env: ## A private file for another agent's API key. Usage: make agent-env AGENT=<name>
+	@agent=$(call shquote,AGENT); \
+	 case "$$agent" in ''|*[!a-z0-9-]*|-*|*-) echo "ERROR: AGENT missing or not an agent name. Usage: make agent-env AGENT=<name>"; exit 1;; esac; \
+	 dir="$(JAIL_AGENT_ENV_DIR)"; file="$$dir/$$agent.env"; \
+	 case "$$(cd "$$(dirname "$$dir")" 2>/dev/null && pwd -P)/$$(basename "$$dir")/" in "$$(cd "$(DEV_PROJECTS)" 2>/dev/null && pwd -P)"/*) \
+	   echo "ERROR: $$dir is inside DEV_PROJECTS, where the jails can read it"; exit 1;; esac; \
+	 (umask 077 && mkdir -p "$$dir"); \
+	 if [ -e "$$file" ]; then chmod 600 "$$file"; echo "OK: $$file already exists, kept (mode 600)."; \
+	 else (umask 077 && printf '%s\n' "# The API key of $$agent: NAME=value lines, passed to its jail only." \
+	   "# Values are taken as they are: no quotes, no \$$ expansion." "# ANTHROPIC_API_KEY=" "# OPENAI_API_KEY=" > "$$file") && \
+	   echo "OK: $$file written, mode 600. Put the key in it; the next agent-jail $$agent reads it."; fi
 
 # The dev container images pin their user to UID 1000 (no --build-arg with
 # your UID): the devcontainer.json files map your host user onto 1000.
@@ -525,4 +557,5 @@ clean-images: ## Remove the built images (leaves volumes and data alone)
 	-podman rmi $(JAIL_IMAGE) $(JAIL_PROXY_IMAGE) $(JAIL_CACHE_IMAGE) \
 	  localhost/devcontainer-go:latest localhost/devcontainer-php:latest \
 	  localhost/devcontainer-react:latest localhost/devcontainer-vue:latest \
-	  $(foreach n,$(MCP_NAMES),localhost/$(JAIL_MCP_PREFIX)-$(n):latest)
+	  $(foreach n,$(MCP_NAMES),localhost/$(JAIL_MCP_PREFIX)-$(n):latest) \
+	  $(foreach n,$(AGENT_NAMES),localhost/$(n)-jail:latest)
