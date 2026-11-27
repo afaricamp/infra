@@ -20,6 +20,10 @@
 #   STUB_SELINUX_CTX    their SELinux context (default '?', no SELinux)
 #   STUB_UNREADABLE     volumes stat cannot read (Permission denied)
 #   STUB_CHECK_FAIL     set to make the check container fail to start
+#   The jail itself ('podman run' of anything else):
+#   STUB_RUN_EFFECT     shell snippet run in the current directory, as if
+#                       Claude had changed the project (e.g. 'echo x >> Makefile')
+#   STUB_RUN_EXIT       its exit status (default 0)
 log="${STUB_LOG:-/dev/null}"
 printf '%s\n' "$*" >> "$log"
 last="${*: -1}"
@@ -76,7 +80,9 @@ case "$1 ${2:-}" in
         done
         exit "$status" ;;
     esac
-    [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.run" ;;
+    [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.run"
+    [ -z "${STUB_RUN_EFFECT:-}" ] || sh -c "$STUB_RUN_EFFECT"
+    exit "${STUB_RUN_EXIT:-0}" ;;
   *)
     exit 1 ;;
 esac
