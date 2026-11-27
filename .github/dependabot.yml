@@ -1,0 +1,12 @@
+# Keeps the actions in .github/workflows up to date. They are pinned to commit
+# SHAs with the version in a comment, and Dependabot updates both. One grouped
+# PR a week, which runs the normal checks. Free for public repositories.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

@@ -65,10 +65,12 @@ BATS_IMAGE     := localhost/dev-infra-bats:latest
 TESTS          ?= tests/integration
 SHELLCHECK     := docker.io/koalaman/shellcheck:v0.10.0
 HADOLINT       := docker.io/hadolint/hadolint:v2.12.0
+ACTIONLINT     := docker.io/rhysd/actionlint:1.7.12
+ZIZMOR         := ghcr.io/zizmorcore/zizmor:1.33.1
 SCRIPTS        := dev.sh claude-jail/common.sh claude-jail/launch_claude.sh \
                   claude-jail/egress-hardening/setup-egress.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
-                  tests/static/policy.sh tests/ci/setup-rootless-podman.sh \
+                  tests/static/policy.sh tests/ci/setup-rootless-podman.sh tests/ci/claude-smoke.sh \
                   tests/unit/stubs/podman \
                   tests/integration/fixtures/claude-stub
 CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy \
@@ -335,13 +337,15 @@ endif
 	   fi; \
 	 fi
 
-lint: ## Run shellcheck and hadolint (in containers; nothing installed on the host)
+lint: ## Run shellcheck, hadolint, actionlint and zizmor (in containers; nothing installed on the host)
 	$(ENGINE) run --rm --security-opt label=disable -v "$(CURDIR)":/mnt:ro -w /mnt \
 	  $(SHELLCHECK) -x -P SCRIPTDIR $(SCRIPTS)
 	@for f in $(CONTAINERFILES); do \
 	   echo "hadolint $$f"; \
 	   $(ENGINE) run --rm -i $(HADOLINT) /bin/hadolint --ignore DL3008 - < "$$f" || exit 1; \
 	 done
+	$(ENGINE) run --rm --security-opt label=disable -v "$(CURDIR)":/repo:ro -w /repo $(ACTIONLINT) $(wildcard .github/workflows/*.yml)
+	$(ENGINE) run --rm --security-opt label=disable -v "$(CURDIR)":/repo:ro -w /repo $(ZIZMOR) --offline .github/workflows
 
 # --- Tests (see README, "Tests") ---------------------------------------------
 

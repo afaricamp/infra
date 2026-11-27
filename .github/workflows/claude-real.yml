@@ -1,0 +1,49 @@
+# Smoke test with the real Claude Code binary (tests.yml uses a stub): the
+# latest release, downloaded with the official installer, has to run, start
+# through the launchers and load the devkit plugin. No account, no API key,
+# no secrets. See tests/ci/claude-smoke.sh.
+#
+# Weekly, by hand, and when the jail, the devkit or this check change (in a
+# pull request, or on main). It is path-filtered, so do not make it a
+# required status check: a PR that touches none of these paths would never
+# get it and could not merge.
+name: claude-real
+
+on:
+  schedule:
+    - cron: "41 5 * * 1"   # Mondays 05:41 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "claude-jail/**"
+      - "devkit/**"
+      - "Makefile"
+      - "tests/ci/**"
+      - ".github/workflows/claude-real.yml"
+  pull_request:
+    paths:
+      - "claude-jail/**"
+      - "devkit/**"
+      - "Makefile"
+      - "tests/ci/**"
+      - ".github/workflows/claude-real.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-real-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: real Claude Code binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: tests/ci/setup-rootless-podman.sh
+      - run: tests/ci/claude-smoke.sh

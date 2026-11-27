@@ -1,15 +1,23 @@
 # Runs the three test levels (see README, "Tests").
-#   static, unit       fast; every push and pull request
+#   static, unit       fast; every pull request and every push to main
 #   unit-macos         the unit tests with the tools a Mac ships
 #   integration-*      real rootless podman on the runner; after the fast ones
+# A branch with an open PR runs once, through pull_request; a push to
+# another branch without a PR runs nothing (open a PR or use
+# workflow_dispatch).
+# Also weekly, so drift in the floating base image tags (golang, node, php,
+# ubuntu) or in the runner image shows up even when nothing was pushed.
 # SELinux is not available on GitHub's Ubuntu runners: the SELinux tests skip
 # themselves here and only run on an enforcing host ('make test-integration').
 name: tests
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"   # Mondays 05:17 UTC
 
 permissions:
   contents: read
@@ -20,11 +28,13 @@ concurrency:
 
 jobs:
   static:
-    name: static (shellcheck, hadolint, policy)
+    name: static (shellcheck, hadolint, actionlint, zizmor, policy)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: tests/ci/setup-rootless-podman.sh
       - run: make test-static
 
@@ -33,7 +43,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: tests/ci/setup-rootless-podman.sh
       # The container runner is the default path; this keeps it tested.
       - run: make test-unit
@@ -43,7 +55,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: brew install bats-core
       # PATH without Homebrew, so the scripts and the Makefile run with what a
       # Mac ships: /bin/bash 3.2, /usr/bin/make 3.81, BSD utilities, /bin/zsh.
@@ -58,7 +72,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: tests/ci/setup-rootless-podman.sh
       - run: make test-integration TESTS="tests/integration/jail.bats tests/integration/volumes.bats tests/integration/egress.bats"
 
@@ -72,7 +88,9 @@ jobs:
       matrix:
         type: [go, php, react, vue]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: tests/ci/setup-rootless-podman.sh
       - run: make test-integration TESTS=tests/integration/devcontainers.bats
         env:
