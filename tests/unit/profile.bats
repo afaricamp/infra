@@ -214,14 +214,14 @@ refused() {
 
 @test "make profile: every example in the template is valid once uncommented" {
   run make_repo profile PROJECT="$PROJ"
-  sed -E 's/^# (memory|pids|network|ro_paths|watch_paths|allowlist|mcp|image) = /\1 = /' "$PROFILE" > "$PROFILE.new"
+  sed -E 's/^# (memory|pids|network|ro_paths|watch_paths|allowlist|mcp|image|snapshot) = /\1 = /' "$PROFILE" > "$PROFILE.new"
   mv "$PROFILE.new" "$PROFILE"
   launch
   [ "$status" -eq 0 ]
   has_pair "$(run_args)" --memory 8g
   has_pair "$(run_args)" --pids-limit 1024
   has_pair "$(run_args)" --network slirp4netns
-  contains "$output" "(memory, pids, network, ro_paths, watch_paths, allowlist, mcp, image)"
+  contains "$output" "(memory, pids, network, ro_paths, watch_paths, allowlist, mcp, image, snapshot)"
 }
 
 @test "make profile: keeps an existing profile" {

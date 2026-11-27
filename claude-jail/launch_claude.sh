@@ -29,6 +29,9 @@ jail_project_flags
 NETWORK_FLAGS=()
 [ -n "${JAIL_NETWORK:-}" ] && NETWORK_FLAGS=(--network "$JAIL_NETWORK")
 
+# Save the project first, when its profile asks for it ('snapshot = on').
+[ "$JAIL_SNAPSHOT" = off ] || jail_snapshot_take
+
 # Report the host-run files Claude changed, when the container exits.
 jail_watch_start
 

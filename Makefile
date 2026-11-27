@@ -23,6 +23,7 @@ override FOLLOW  := $(value FOLLOW)
 override NAME    := $(value NAME)
 override MCP     := $(value MCP)
 override VARIANT := $(value VARIANT)
+override SNAPSHOT := $(value SNAPSHOT)
 
 CLAUDE_JAIL   := $(CURDIR)/claude-jail
 DEVCONTAINERS := $(CURDIR)/devcontainers
@@ -49,6 +50,7 @@ JAIL_PERSONAL_SKILLS_DIR ?= $(CURDIR)/personal-skills
 JAIL_MCP_PREFIX    ?= claude-mcp
 JAIL_MCP_DIR       ?= $(CURDIR)/mcp
 JAIL_SECRETS_DIR   ?= $(HOME)/.config/dev-infra/secrets
+JAIL_SNAPSHOTS_DIR ?= $(HOME)/.local/share/dev-infra/snapshots
 
 # Where your projects live: the only directories the Claude jail may be
 # launched from. Baked into the installed dev.sh by 'make aliases'.
@@ -68,7 +70,7 @@ DC_TYPES      := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(DEVCONTAINER
 # '$(...)' inside them (even run '$(shell ...)') when it references or exports
 # them, so they are never exported and only read raw, through $(value), and
 # single-quoted for the shell: a path is just a path.
-unexport PROJECT TYPE FORCE SRC NAME MCP VARIANT
+unexport PROJECT TYPE FORCE SRC NAME MCP VARIANT SNAPSHOT
 shquote = '$(subst ','\'',$(value $(1)))'
 
 # Tests and linters. Linters and the unit tests run in containers so nothing
@@ -84,7 +86,7 @@ HADOLINT       := docker.io/hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176ee
 SKOPEO         := quay.io/skopeo/stable:v1.25.1@sha256:4784191278912fc8e8dd914fd28e65540c499798d59f688f97c7e1a22a259d38
 SCRIPTS        := dev.sh doctor.sh bump-images.sh claude-jail/common.sh claude-jail/launch_claude.sh \
                   claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh claude-jail/profile.sh \
-                  claude-jail/secrets.sh \
+                  claude-jail/secrets.sh claude-jail/snapshot.sh \
                   claude-jail/egress-hardening/setup-egress.sh claude-jail/egress-hardening/egress-log.sh \
                   claude-jail/egress-hardening/setup-caches.sh claude-jail/egress-hardening/cache-entrypoint.sh \
                   claude-jail/egress-hardening/prune-proxies.sh claude-jail/egress-hardening/mcp-servers.sh \
@@ -109,7 +111,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
         force-download-claude update-claude \
         build build-claude build-go build-php build-react build-vue egress egress-dev egress-log \
         caches caches-down egress-prune mcp-up mcp-down mcp-list \
-        aliases devcontainer ai-sessions profile secrets personal-skills fix-volumes verify doctor bump-images lint clean-images \
+        aliases devcontainer ai-sessions profile secrets snapshots restore-snapshot personal-skills fix-volumes verify doctor bump-images lint clean-images \
         test test-static test-unit test-integration test-all
 
 help: ## Show this help
@@ -369,6 +371,21 @@ secrets: ## A private file for the secrets of a project's dev container or an MC
 	 else \
 	   echo "ERROR: PROJECT or MCP missing. Usage: make secrets PROJECT=/path, or make secrets MCP=<name>"; exit 1; \
 	 fi
+
+# Snapshots of a project, taken by the launchers before the jail starts when
+# its profile says 'snapshot = on': a tar.gz outside the project. restore puts
+# one back and keeps the project as it was, so nothing is lost either way.
+SNAPSHOT_ENV = DEV_PROJECTS="$(DEV_PROJECTS)" JAIL_SNAPSHOTS_DIR="$(JAIL_SNAPSHOTS_DIR)"
+
+snapshots: ## List a project's snapshots. Usage: make snapshots PROJECT=/path
+	@project=$(call shquote,PROJECT); \
+	 case "$$project" in "~"/*) project="$$HOME/$${project#\~/}";; esac; \
+	 $(SNAPSHOT_ENV) "$(CLAUDE_JAIL)/snapshot.sh" list "$$project"
+
+restore-snapshot: ## Put a project back as it was before a session (keeps the current one). Usage: make restore-snapshot PROJECT=/path [SNAPSHOT=<name>]
+	@project=$(call shquote,PROJECT); snapshot=$(call shquote,SNAPSHOT); \
+	 case "$$project" in "~"/*) project="$$HOME/$${project#\~/}";; esac; \
+	 $(SNAPSHOT_ENV) "$(CLAUDE_JAIL)/snapshot.sh" restore "$$project" "$$snapshot"
 
 # Your own Claude skills, for the jail: the launchers mount this copy read-only
 # over ~/.claude/skills. A copy and not a mount of the original because on

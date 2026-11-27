@@ -36,7 +36,7 @@ mkdir -p "$(dirname "$file")"
 # read literally and never run: no quotes, \$ or backslashes. An unknown key
 # stops the launch. An environment variable (JAIL_MEMORY, JAIL_PIDS,
 # JAIL_NETWORK, JAIL_RO_PATHS, JAIL_WATCH_PATHS, JAIL_ALLOWLIST,
-# JAIL_MCP_SERVERS, JAIL_VARIANT) wins over this file.
+# JAIL_MCP_SERVERS, JAIL_VARIANT, JAIL_SNAPSHOT) wins over this file.
 
 # Memory limit, swap off. Default: $JAIL_DEFAULT_MEMORY.
 # memory = 8g
@@ -79,6 +79,11 @@ EOF
 # as in the php dev container). 'make build-claude' builds them all.
 # Default: full.
 # image = php
+
+# Save the project before each launch, outside it, so that
+# 'make restore-snapshot PROJECT=<path>' can put it back. The last 5 are
+# kept (JAIL_SNAPSHOT_KEEP); node_modules and vendor are left out. Default: off.
+# snapshot = on
 EOF
 } > "$file"
 

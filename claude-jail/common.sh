@@ -222,7 +222,8 @@ jail_ro_gitfile() {
 jail_project_flags() {
   local here p seen=" "
   here="$(pwd -P)"
-  JAIL_PROJECT_FLAGS=(-v "$here":/home/claudeuser/project:z)
+  # The label tells 'make restore-snapshot' a jail is using this project.
+  JAIL_PROJECT_FLAGS=(-v "$here":/home/claudeuser/project:z --label "dev-infra.project=$here")
   for p in $JAIL_RO_PATHS; do jail_ro_add "$p"; done
   case "$JAIL_RO_NESTED_DEPTH" in
     ''|*[!0-9]*) jail_die "JAIL_RO_NESTED_DEPTH must be a number (got '$JAIL_RO_NESTED_DEPTH')." ;;
@@ -384,8 +385,10 @@ jail_watch_snapshot() {
 }
 
 # jail_watch_start: snapshot now, report from an EXIT trap. Call it right
-# before 'podman run'.
+# before 'podman run'. The trap also points at the project's snapshot, when
+# jail_snapshot_take took one (see "Snapshots").
 jail_watch_start() {
+  [ -z "${JAIL_SNAPSHOT_FILE:-}" ] || trap jail_watch_report EXIT
   [ -n "$JAIL_WATCH_PATHS" ] || return 0
   if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1 &&
      ! command -v openssl >/dev/null 2>&1; then
@@ -399,25 +402,104 @@ jail_watch_start() {
 }
 
 # jail_watch_report: compare with the snapshot and print what changed to
-# stderr. Runs as the EXIT trap, so it does not change the exit status.
+# stderr, then where the project's snapshot is. Runs as the EXIT trap, so it
+# does not change the exit status.
 jail_watch_report() {
-  [ -n "${JAIL_WATCH_BEFORE:-}" ] && [ -f "$JAIL_WATCH_BEFORE" ] || return 0
-  local changes
-  changes="$(jail_watch_snapshot "$JAIL_WATCH_DIR" | awk -F'\t' '
-    NR == FNR { before[$1] = $2 FS $3; next }
-    { seen[$1] = 1
-      if (!($1 in before)) print $1 "\tcreated"
-      else if (before[$1] != $2 FS $3) print $1 "\tchanged" }
-    END { for (p in before) if (!(p in seen)) print p "\tdeleted" }
-  ' "$JAIL_WATCH_BEFORE" - | sort)"
-  rm -f -- "$JAIL_WATCH_BEFORE"
-  [ -n "$changes" ] || return 0
-  {
-    echo ""
-    echo ">> Claude changed files that your host runs (make, npm scripts, git hooks,"
-    echo "   direnv, CI). Review them before you run anything from this project:"
-    printf '%s\n' "$changes" | awk -F'\t' '{ printf "     %-8s %s\n", $2, $1 }'
-  } >&2
+  local changes=""
+  if [ -n "${JAIL_WATCH_BEFORE:-}" ] && [ -f "$JAIL_WATCH_BEFORE" ]; then
+    changes="$(jail_watch_snapshot "$JAIL_WATCH_DIR" | awk -F'\t' '
+      NR == FNR { before[$1] = $2 FS $3; next }
+      { seen[$1] = 1
+        if (!($1 in before)) print $1 "\tcreated"
+        else if (before[$1] != $2 FS $3) print $1 "\tchanged" }
+      END { for (p in before) if (!(p in seen)) print p "\tdeleted" }
+    ' "$JAIL_WATCH_BEFORE" - | sort)"
+    rm -f -- "$JAIL_WATCH_BEFORE"
+  fi
+  if [ -n "$changes" ]; then
+    {
+      echo ""
+      echo ">> Claude changed files that your host runs (make, npm scripts, git hooks,"
+      echo "   direnv, CI). Review them before you run anything from this project:"
+      printf '%s\n' "$changes" | awk -F'\t' '{ printf "     %-8s %s\n", $2, $1 }'
+    } >&2
+  fi
+  if [ -n "${JAIL_SNAPSHOT_FILE:-}" ]; then
+    printf '\n>> The project as it was before this session: %s\n' "$JAIL_SNAPSHOT_FILE" >&2
+    printf "   To go back to it: make restore-snapshot PROJECT='%s'\n" "$JAIL_SNAPSHOT_PROJECT" >&2
+  fi
+}
+
+# --- Snapshots ---
+# 'snapshot = on' in a project's profile (or JAIL_SNAPSHOT=on) makes both
+# launchers save the project before the jail starts: a tar.gz of the whole
+# directory, .git included, without the dependency folders (JAIL_SNAPSHOT_
+# EXCLUDE, by name at any depth: node_modules vendor), in
+#   $JAIL_SNAPSHOTS_DIR/<project>/<date>-<time>.tar.gz
+# outside every project, where the jail cannot reach it (in the project, the
+# jail could delete it along with everything else). Only you can read it: it
+# holds what the project holds, .env files too. The last JAIL_SNAPSHOT_KEEP
+# (default 5) of each project are kept.
+# It is taken with tar on the host, never with git: git reads the project's
+# .git/config, which the jail may have written (a core.fsmonitor or a clean
+# filter would run on the host). tar only reads files; symlinks are stored as
+# symlinks, never followed.
+# 'make restore-snapshot PROJECT=<path>' puts one back (snapshot.sh).
+JAIL_SNAPSHOTS_DIR="${JAIL_SNAPSHOTS_DIR:-$HOME/.local/share/dev-infra/snapshots}"
+JAIL_SNAPSHOT_EXCLUDE="${JAIL_SNAPSHOT_EXCLUDE-node_modules vendor}"
+JAIL_SNAPSHOT_KEEP="${JAIL_SNAPSHOT_KEEP:-5}"
+
+# jail_project_rel: the current directory's path under $DEV_PROJECTS (a
+# project: jail_guard checks that first).
+jail_project_rel() {
+  local here projects
+  here="$(pwd -P)"
+  projects="$(readlink -f "$DEV_PROJECTS")"
+  printf '%s\n' "${here#"$projects"/}"
+}
+
+# jail_snapshot_dir: the snapshots folder of the current project, checked to
+# be outside $DEV_PROJECTS.
+jail_snapshot_dir() {
+  local dir
+  dir="$JAIL_SNAPSHOTS_DIR/$(jail_project_rel)"
+  jail_outside_projects "$dir" "the snapshots folder" \
+    "Keep snapshots in ~/.local/share/dev-infra/snapshots, or point JAIL_SNAPSHOTS_DIR outside DEV_PROJECTS."
+  printf '%s\n' "$dir"
+}
+
+# jail_snapshot_take: save the current project (see above), drop the oldest
+# beyond JAIL_SNAPSHOT_KEEP, and set JAIL_SNAPSHOT_FILE and
+# JAIL_SNAPSHOT_PROJECT for the report at exit.
+jail_snapshot_take() {
+  local here dir name file e old count args=()
+  here="$(pwd -P)"
+  case "$JAIL_SNAPSHOT_KEEP" in
+    ''|*[!0-9]*|0) jail_die "JAIL_SNAPSHOT_KEEP must be a whole number above 0 (got '$JAIL_SNAPSHOT_KEEP')." ;;
+  esac
+  dir="$(jail_snapshot_dir)" || exit 1
+  (umask 077 && mkdir -p "$dir") || jail_die "could not create the snapshots folder $dir."
+  chmod go-rwx "$JAIL_SNAPSHOTS_DIR" 2>/dev/null || true
+  name="$(date +%Y%m%d-%H%M%S)"
+  [ ! -e "$dir/$name.tar.gz" ] || name="$name-$$"
+  file="$dir/$name.tar.gz"
+  # read -a: no glob expansion of an exclude pattern here.
+  read -r -a e <<<"$JAIL_SNAPSHOT_EXCLUDE"
+  for old in ${e[@]+"${e[@]}"}; do args+=("--exclude=$old"); done
+  if ! (umask 077 && tar -czf "$file.part" ${args[@]+"${args[@]}"} -C "$here" .); then
+    rm -f -- "$file.part"
+    jail_die "could not save a snapshot of the project (see the tar error above)." \
+      "Turn snapshots off for this launch with JAIL_SNAPSHOT=off."
+  fi
+  mv -f -- "$file.part" "$file"
+  # Names sort by date: keep the newest JAIL_SNAPSHOT_KEEP.
+  count=0
+  while IFS= read -r old; do
+    count=$((count + 1))
+    [ "$count" -le "$JAIL_SNAPSHOT_KEEP" ] || rm -f -- "$old"
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.tar.gz' | sort -r)
+  JAIL_SNAPSHOT_FILE="$file" JAIL_SNAPSHOT_PROJECT="$here"
+  printf 'Snapshot: %s (%s)\n' "$file" "$(du -h "$file" | cut -f1 | tr -d ' ')" >&2
 }
 
 # --- Per-project profile ---
@@ -445,20 +527,19 @@ jail_watch_report() {
 #                                                   "MCP servers")
 #   image        full, go, node or php              as JAIL_VARIANT (see
 #                                                   "Image variants")
+#   snapshot     on or off                          as JAIL_SNAPSHOT (see
+#                                                   "Snapshots")
 # The two lists only add: a profile can protect more, never less, and a path
 # added to the defaults later also covers the projects that have a profile.
 # The environment wins over the profile, and JAIL_RO_PATHS and
 # JAIL_WATCH_PATHS still replace their whole list.
 JAIL_PROFILES_DIR="${JAIL_PROFILES_DIR:-$HOME/.config/dev-infra/projects}"
-JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths allowlist mcp image"
+JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths allowlist mcp image snapshot"
 
 # jail_profile_path: the profile file of the current directory, a project
 # under $DEV_PROJECTS (jail_guard checks that first).
 jail_profile_path() {
-  local here projects
-  here="$(pwd -P)"
-  projects="$(readlink -f "$DEV_PROJECTS")"
-  printf '%s/%s.conf\n' "$JAIL_PROFILES_DIR" "${here#"$projects"/}"
+  printf '%s/%s.conf\n' "$JAIL_PROFILES_DIR" "$(jail_project_rel)"
 }
 
 # jail_outside_projects FILE WHAT HINT: stop when FILE is, or leads to, a path
@@ -594,6 +675,12 @@ jail_settings() {
   JAIL_MCP_FROM="$JAIL_FROM"
   jail_pick JAIL_VARIANT image full
   jail_variant_pick
+  jail_pick JAIL_SNAPSHOT snapshot off
+  case "$JAIL_SNAPSHOT" in
+    on|1) JAIL_SNAPSHOT=on ;;
+    off|0) JAIL_SNAPSHOT=off ;;
+    *) jail_die "$JAIL_FROM: '$JAIL_SNAPSHOT' is not on or off." ;;
+  esac
   JAIL_FLAGS+=(--pids-limit "$JAIL_PIDS" --memory "$JAIL_MEMORY" --memory-swap "$JAIL_MEMORY")
   if [ -n "$JAIL_PROFILE" ]; then
     local set="${JAIL_PROFILE_SET// /, }"

@@ -12,6 +12,8 @@ export JAIL_PERSONAL_SKILLS_DIR=""
 export JAIL_PROFILES_DIR="/nonexistent/jail-profiles"
 # Nor your secrets in ~/.config/dev-infra/secrets.
 export JAIL_SECRETS_DIR="/nonexistent/jail-secrets"
+# Nor your snapshots.
+export JAIL_SNAPSHOTS_DIR="/nonexistent/jail-snapshots"
 
 # A projects directory with one project, as the launchers expect.
 setup_projects() {
@@ -20,6 +22,7 @@ setup_projects() {
   PROJ="$(cd "$DEV_PROJECTS/svc" && pwd -P)"
   export JAIL_PROFILES_DIR="$BATS_TEST_TMPDIR/profiles"
   export JAIL_SECRETS_DIR="$BATS_TEST_TMPDIR/secrets"
+  export JAIL_SNAPSHOTS_DIR="$BATS_TEST_TMPDIR/snapshots"
 }
 
 # Put the fake podman first on PATH.
@@ -35,7 +38,7 @@ use_stubs() {
   unset STUB_PROJECT_PROXIES STUB_PROJECT_STOPPED STUB_PROJECT_NEVER_STARTED STUB_PROJECT_PROXY_IP
   unset STUB_PROXIES_IN_USE STUB_CREATE_FAIL STUB_PROJECT_NETS JAIL_ALLOWLIST
   unset STUB_MCP_RUNNING STUB_MCP_IP STUB_MCP_URL STUB_MCP_DIES JAIL_MCP_SERVERS
-  unset STUB_IMAGES_MISSING JAIL_VARIANT
+  unset STUB_IMAGES_MISSING JAIL_VARIANT STUB_PROJECTS_IN_USE STUB_DEVCONTAINERS JAIL_SNAPSHOT
   # No real definitions (the tests make their own), no wait after a start.
   export JAIL_MCP_DIR="$BATS_TEST_TMPDIR/mcp" JAIL_MCP_SETTLE=0
 }
