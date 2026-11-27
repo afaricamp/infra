@@ -128,13 +128,18 @@ jail_check_volumes() {
 #   .git/config    core.fsmonitor / core.hooksPath / aliases run commands on the
 #                  host; this also means 'git config'/'git remote add' fail in
 #                  the jail.
+#   .gitmodules    'git submodule update' on the host fetches from the URLs in it.
 #   .envrc         direnv runs it on the host.
-#   .claude/settings.json
-#                  Claude Code on the HOST runs the hooks, statusLine and
-#                  apiKeyHelper commands it declares, if you also open the
-#                  project with Claude outside the jail.
+#   .claude/settings.json, .mcp.json
+#                  Claude Code on the HOST runs the hooks, statusLine,
+#                  apiKeyHelper and MCP server commands they declare, if you
+#                  also open the project with Claude outside the jail.
+#                  (.claude/settings.local.json stays writable, because Claude
+#                  saves "always allow" there; the exit report watches it.)
+#   .vscode, .idea editor settings and tasks, which run on the host side.
 # Only paths that exist at launch can be overmounted: anything Claude creates
-# later (e.g. a 'git init' in a project that had no .git) is not covered.
+# later (e.g. a 'git init' in a project that had no .git) is not covered; the
+# exit report (JAIL_WATCH_PATHS) lists the ones it creates.
 # JAIL_RO_PATHS overrides the list (space separated, relative to the project).
 #
 # The label is the SHARED one (:z, container_file_t with no MCS category), not
@@ -143,40 +148,88 @@ jail_check_volumes() {
 # whole tree for one container only: whichever starts last would cut the
 # others off mid-session with 'Permission denied'. A project left with a
 # private label by an older version is fixed by the next launch.
-JAIL_RO_PATHS="${JAIL_RO_PATHS:-.devcontainer .git/hooks .git/config .envrc .claude/settings.json}"
+JAIL_RO_PATHS="${JAIL_RO_PATHS:-.devcontainer .git/hooks .git/config .gitmodules .envrc .claude/settings.json .mcp.json .vscode .idea}"
 
-# Nested .devcontainer folders are host-executed too: a monorepo with one dev
-# container per part (api/.devcontainer, web/.devcontainer, see newproj-mono)
-# hands each of them to Gateway. They are found at launch, down to
-# JAIL_RO_NESTED_DEPTH levels below the project (default 4, so
-# apps/web/admin/.devcontainer is covered; 0 turns the scan off), skipping
-# node_modules, vendor and .git so a big tree stays fast. The top-level one
-# belongs to JAIL_RO_PATHS, so overriding that list still decides about it.
+# Below the top level, the same host-run files show up in three more places,
+# found at launch down to JAIL_RO_NESTED_DEPTH levels (default 4; 0 turns all
+# three off), skipping node_modules and vendor so a big tree stays fast:
+#   - nested .devcontainer folders: a monorepo with one dev container per
+#     part (api/.devcontainer, web/.devcontainer, see newproj-mono);
+#   - nested git repositories: their .git/hooks and .git/config;
+#   - git directories that a .git FILE points to (submodule checkouts,
+#     worktrees), including the submodules' own under .git/modules: their
+#     hooks and config, when they are inside the project. When one is
+#     outside, the jail cannot reach it (it is not mounted): a note says git
+#     will not work for it inside the jail.
+# The top-level .devcontainer and .git stay under JAIL_RO_PATHS, so overriding
+# that list still decides about them.
 JAIL_RO_NESTED_DEPTH="${JAIL_RO_NESTED_DEPTH:-4}"
+
+# jail_ro_add REL: mount the project's REL read-only, if it exists and is not
+# mounted yet. Uses jail_project_flags's locals 'here' and 'seen'.
+jail_ro_add() {
+  [ -e "$here/$1" ] || return 0
+  case "$seen" in *" $1 "*) return 0 ;; esac
+  JAIL_PROJECT_FLAGS+=(-v "$here/$1":"/home/claudeuser/project/$1":ro)
+  seen="$seen$1 "
+}
+
+# jail_ro_gitfile REL: REL is a .git file ('gitdir: <path>'). Protect the hooks
+# and config of the directory it points to, or note that it is out of reach.
+jail_ro_gitfile() {
+  local line target
+  line="$(head -n 1 "$here/$1" 2>/dev/null)"
+  case "$line" in
+    "gitdir: "*) target="${line#gitdir: }" ;;
+    *) return 0 ;;
+  esac
+  case "$target" in /*) ;; *) target="$(dirname "$here/$1")/$target" ;; esac
+  target="$(cd "$target" 2>/dev/null && pwd -P)" || return 0
+  case "$target/" in
+    "$here"/*)
+      jail_ro_add "${target#"$here"/}/hooks"
+      jail_ro_add "${target#"$here"/}/config" ;;
+    *) printf 'NOTE: %s points to a git directory outside the project (%s):\n      git cannot use it inside the jail, and the jail cannot change it.\n' \
+         "$1" "$target" >&2 ;;
+  esac
+}
 
 jail_project_flags() {
   local here p seen=" "
   here="$(pwd -P)"
   JAIL_PROJECT_FLAGS=(-v "$here":/home/claudeuser/project:z)
-  for p in $JAIL_RO_PATHS; do
-    [ -e "$here/$p" ] || continue
-    JAIL_PROJECT_FLAGS+=(-v "$here/$p":"/home/claudeuser/project/$p":ro)
-    seen="$seen$p "
-  done
+  for p in $JAIL_RO_PATHS; do jail_ro_add "$p"; done
   case "$JAIL_RO_NESTED_DEPTH" in
     ''|*[!0-9]*) jail_die "JAIL_RO_NESTED_DEPTH must be a number (got '$JAIL_RO_NESTED_DEPTH')." ;;
   esac
   [ "$JAIL_RO_NESTED_DEPTH" -gt 0 ] || return 0
+
+  # Submodules keep their git directories under .git/modules/<name>.
+  if [ -d "$here/.git/modules" ]; then
+    while IFS= read -r p; do
+      jail_ro_add "${p#"$here"/}"
+    done < <(find "$here/.git/modules" -maxdepth $((JAIL_RO_NESTED_DEPTH * 2)) \
+               \( -type d -name hooks -o -type f -name config \) -print -prune 2>/dev/null)
+  fi
+
   # "$here/." so the project's own name never matches a pruned name.
   while IFS= read -r p; do
     p="${p#"$here"/./}"
-    [ "$p" = .devcontainer ] && continue
-    case "$seen" in *" $p "*) continue ;; esac
-    JAIL_PROJECT_FLAGS+=(-v "$here/$p":"/home/claudeuser/project/$p":ro)
-    seen="$seen$p "
+    case "$p" in
+      .devcontainer) ;;                              # top level: JAIL_RO_PATHS
+      .git) [ -f "$here/.git" ] && jail_ro_gitfile .git ;;
+      */.devcontainer) jail_ro_add "$p" ;;
+      */.git)
+        if [ -d "$here/$p" ]; then
+          jail_ro_add "$p/hooks"
+          jail_ro_add "$p/config"
+        else
+          jail_ro_gitfile "$p"
+        fi ;;
+    esac
   done < <(find "$here/." -maxdepth "$JAIL_RO_NESTED_DEPTH" \
-             \( -name node_modules -o -name vendor -o -name .git \) -prune -o \
-             -type d -name .devcontainer -print -prune 2>/dev/null)
+             \( -name node_modules -o -name vendor \) -prune -o \
+             \( -name .devcontainer -o -name .git \) -print -prune 2>/dev/null)
   return 0
 }
 
@@ -269,7 +322,10 @@ fi
 # Computed on the host, never in the jail; Claude's exit code is kept.
 # JAIL_WATCH_PATHS: space-separated paths or globs relative to the project
 # (directories are walked); empty turns the report off.
-JAIL_WATCH_PATHS="${JAIL_WATCH_PATHS-Makefile GNUmakefile makefile package.json composer.json go.mod .envrc .github/workflows *.sh .git/hooks}"
+# The read-only paths are watched too: a read-only mount only covers what
+# exists at launch, so this lists the ones Claude creates. And
+# .claude/settings.local.json, which stays writable on purpose.
+JAIL_WATCH_PATHS="${JAIL_WATCH_PATHS-Makefile GNUmakefile makefile package.json composer.json go.mod .envrc .github/workflows *.sh .git/hooks .git/config .gitmodules .claude/settings.json .claude/settings.local.json .mcp.json .devcontainer}"
 
 # jail_sha256: the SHA-256 of stdin, with whatever this host has.
 jail_sha256() {
