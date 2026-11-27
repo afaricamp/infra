@@ -7,11 +7,16 @@ COMMON="$REPO/claude-jail/common.sh"
 # 'make personal-skills'; the tests that need one set it themselves.
 export JAIL_PERSONAL_SKILLS_DIR=""
 
+# Nor your profiles in ~/.config/dev-infra/projects: setup_projects gives each
+# test an empty directory of its own.
+export JAIL_PROFILES_DIR="/nonexistent/jail-profiles"
+
 # A projects directory with one project, as the launchers expect.
 setup_projects() {
   export DEV_PROJECTS="$BATS_TEST_TMPDIR/projects"
   mkdir -p "$DEV_PROJECTS/svc"
   PROJ="$(cd "$DEV_PROJECTS/svc" && pwd -P)"
+  export JAIL_PROFILES_DIR="$BATS_TEST_TMPDIR/profiles"
 }
 
 # Put the fake podman first on PATH.

@@ -13,9 +13,10 @@ guard() {
   run bash -c 'cd "$1" && source "$2" && jail_guard && echo PASSED' _ "$1" "${2:-$COMMON}"
 }
 
-# flags NAME [DIR] [COMMON]: print the array NAME after sourcing common.sh in DIR.
+# flags NAME [DIR] [COMMON]: print the array NAME after sourcing common.sh in
+# DIR and running what the launchers run before the volume check.
 flags() {
-  run bash -c 'cd "$1" && source "$2" && jail_project_flags && eval "printf \"%s\n\" \"\${$3[@]}\""' \
+  run bash -c 'cd "$1" && source "$2" && jail_settings && jail_project_flags && eval "printf \"%s\n\" \"\${$3[@]}\""' \
     _ "${2:-$PROJ}" "${3:-$COMMON}" "$1"
 }
 
@@ -131,6 +132,41 @@ flags() {
   flags JAIL_PROJECT_FLAGS
   [ "$(grep -c ':ro$' <<<"$output")" -eq 1 ]
   has_line "$output" "$PROJ/secrets:/home/claudeuser/project/secrets:ro"
+}
+
+@test "project: a read-only path that is a symlink is resolved: out of the project not mounted, inside mounted where it points" {
+  mkdir -p "$BATS_TEST_TMPDIR/outside" "$PROJ/config/idea" "$PROJ/.git"
+  ln -s "$BATS_TEST_TMPDIR/outside" "$PROJ/.vscode"
+  # Another project: on macOS the podman machine shares all of DEV_PROJECTS.
+  mkdir -p "$DEV_PROJECTS/other"
+  ln -s ../other "$PROJ/.envrc"
+  ln -s config/idea "$PROJ/.idea"
+  ln -s "$BATS_TEST_TMPDIR/outside" "$PROJ/.git/hooks"
+  flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  # Only .idea, mounted at the place it points to: crun refuses a mount
+  # target that is a symlink inside the container.
+  [ "$(grep ':ro$' <<<"$output")" = "$PROJ/config/idea:/home/claudeuser/project/config/idea:ro" ]
+  contains "$output" "NOTE: .vscode leads out of the project (to $(readlink -f "$BATS_TEST_TMPDIR/outside")): not mounted in the jail."
+  contains "$output" "NOTE: .envrc leads out of the project"
+  contains "$output" "NOTE: .git/hooks leads out of the project"
+}
+
+@test "project: two read-only paths that resolve to the same place are mounted once" {
+  mkdir -p "$PROJ/.vscode"
+  ln -s .vscode "$PROJ/.idea"
+  flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 0 ]
+  [ "$(grep ':ro$' <<<"$output")" = "$PROJ/.vscode:/home/claudeuser/project/.vscode:ro" ]
+}
+
+@test "project: a read-only path with '..' is refused, even from a glob" {
+  mkdir -p "$DEV_PROJECTS/other"
+  JAIL_RO_PATHS="../other" flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 1 ]
+  contains "$output" "the read-only path '../other' leads out of the project"
+  JAIL_RO_PATHS="a/../../other" flags JAIL_PROJECT_FLAGS
+  [ "$status" -eq 1 ]
 }
 
 @test "project: the rest of .claude stays writable (skills, commands, settings.local.json)" {

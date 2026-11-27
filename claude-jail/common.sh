@@ -140,7 +140,8 @@ jail_check_volumes() {
 # Only paths that exist at launch can be overmounted: anything Claude creates
 # later (e.g. a 'git init' in a project that had no .git) is not covered; the
 # exit report (JAIL_WATCH_PATHS) lists the ones it creates.
-# JAIL_RO_PATHS overrides the list (space separated, relative to the project).
+# JAIL_RO_PATHS overrides the list (space separated, relative to the project);
+# ro_paths in the project's profile adds to it (see jail_settings).
 #
 # The label is the SHARED one (:z, container_file_t with no MCS category), not
 # a private ':Z'. The project is meant to be open in several containers at
@@ -148,7 +149,7 @@ jail_check_volumes() {
 # whole tree for one container only: whichever starts last would cut the
 # others off mid-session with 'Permission denied'. A project left with a
 # private label by an older version is fixed by the next launch.
-JAIL_RO_PATHS="${JAIL_RO_PATHS:-.devcontainer .git/hooks .git/config .gitmodules .envrc .claude/settings.json .mcp.json .vscode .idea}"
+JAIL_DEFAULT_RO_PATHS=".devcontainer .git/hooks .git/config .gitmodules .envrc .claude/settings.json .mcp.json .vscode .idea"
 
 # Below the top level, the same host-run files show up in three more places,
 # found at launch down to JAIL_RO_NESTED_DEPTH levels (default 4; 0 turns all
@@ -167,11 +168,29 @@ JAIL_RO_NESTED_DEPTH="${JAIL_RO_NESTED_DEPTH:-4}"
 
 # jail_ro_add REL: mount the project's REL read-only, if it exists and is not
 # mounted yet. Uses jail_project_flags's locals 'here' and 'seen'.
+# REL can be a symlink, or go through one: Claude can leave one in the
+# project for the next launch (.idea -> somewhere). The mount source follows
+# it on the host, while crun refuses a target that is a symlink inside the
+# container, so podman would either fail to start or mount whatever the link
+# points to. The path is resolved first: what it points to inside the project
+# is mounted at its real place, and anything that leads out of the project
+# (also a '..') is not mounted at all, with a note.
 jail_ro_add() {
+  local real rel
+  case "/$1/" in
+    */../*) jail_die "the read-only path '$1' leads out of the project." \
+      "Check JAIL_RO_PATHS, or ro_paths in the project's profile." ;;
+  esac
   [ -e "$here/$1" ] || return 0
-  case "$seen" in *" $1 "*) return 0 ;; esac
-  JAIL_PROJECT_FLAGS+=(-v "$here/$1":"/home/claudeuser/project/$1":ro)
-  seen="$seen$1 "
+  real="$(readlink -f "$here/$1")"
+  case "$real/" in
+    "$here"/?*) rel="${real#"$here"/}" ;;
+    *) printf 'NOTE: %s leads out of the project (to %s): not mounted in the jail.\n' "$1" "$real" >&2
+       return 0 ;;
+  esac
+  case "$seen" in *" $rel "*) return 0 ;; esac
+  seen="$seen$rel "
+  JAIL_PROJECT_FLAGS+=(-v "$real":"/home/claudeuser/project/$rel":ro)
 }
 
 # jail_ro_gitfile REL: REL is a .git file ('gitdir: <path>'). Protect the hooks
@@ -245,8 +264,10 @@ jail_name() {
 # Note: --memory/--pids-limit require cgroups v2 delegation (the default on
 # current systemd distributions). If podman warns that it is ignoring them,
 # check the delegation of user@.service; it does not affect writability.
-JAIL_MEMORY="${JAIL_MEMORY:-16g}"
-JAIL_PIDS="${JAIL_PIDS:-2048}"
+# JAIL_MEMORY and JAIL_PIDS, or the profile's memory and pids, change them;
+# jail_settings adds the flags.
+JAIL_DEFAULT_MEMORY=16g
+JAIL_DEFAULT_PIDS=2048
 
 # -t only with a terminal on both ends, so the launchers also work from
 # scripts and tests ('claude-jail -p "..." < prompt.txt').
@@ -261,9 +282,6 @@ JAIL_FLAGS=(
   --userns "keep-id:uid=1000,gid=1000"
   --security-opt no-new-privileges
   --cap-drop ALL
-  --pids-limit "$JAIL_PIDS"
-  --memory "$JAIL_MEMORY"
-  --memory-swap "$JAIL_MEMORY"
   -e TMPDIR=/home/claudeuser/tmp
   --tmpfs /home/claudeuser/tmp:rw,size=1g,mode=1777
   --tmpfs /tmp:rw,size=1g,mode=1777
@@ -321,11 +339,12 @@ fi
 # changed or deleted, for you to review before running them on the host.
 # Computed on the host, never in the jail; Claude's exit code is kept.
 # JAIL_WATCH_PATHS: space-separated paths or globs relative to the project
-# (directories are walked); empty turns the report off.
+# (directories are walked); empty turns the report off. watch_paths in the
+# project's profile adds to the list (see jail_settings).
 # The read-only paths are watched too: a read-only mount only covers what
 # exists at launch, so this lists the ones Claude creates. And
 # .claude/settings.local.json, which stays writable on purpose.
-JAIL_WATCH_PATHS="${JAIL_WATCH_PATHS-Makefile GNUmakefile makefile package.json composer.json go.mod .envrc .github/workflows *.sh .git/hooks .git/config .gitmodules .claude/settings.json .claude/settings.local.json .mcp.json .devcontainer}"
+JAIL_DEFAULT_WATCH_PATHS="Makefile GNUmakefile makefile package.json composer.json go.mod .envrc .github/workflows *.sh .git/hooks .git/config .gitmodules .claude/settings.json .claude/settings.local.json .mcp.json .devcontainer"
 
 # jail_sha256: the SHA-256 of stdin, with whatever this host has.
 jail_sha256() {
@@ -395,10 +414,156 @@ jail_watch_report() {
   } >&2
 }
 
-# Each launcher runs jail_guard, jail_check_volumes and jail_project_flags,
-# then jail_watch_start, then passes "${JAIL_FLAGS[@]}" "${JAIL_PROJECT_FLAGS[@]}"
-# to podman run, followed by the image and the launcher's own arguments
-# (handed to claude).
+# --- Per-project profile ---
+# Settings for one project, kept on the HOST and outside every project:
+#   ~/.config/dev-infra/projects/<project>.conf
+# <project> is the launch directory relative to $DEV_PROJECTS: a jail started
+# in $DEV_PROJECTS/acme/api reads acme/api.conf. Never inside the project:
+# the jail can write there, and can create a file that did not exist at
+# launch. A profile that is, or leads to, a path inside $DEV_PROJECTS is
+# refused for the same reason. 'make profile PROJECT=<path>' writes one with
+# every key commented out.
+#
+# Parsed, never sourced: 'key = value' lines and '#' comment lines, read
+# literally (no quotes, $ or backslashes, so nothing in it can run). An
+# unknown key, a key set twice or a line without '=' stops the launch, so a
+# typo cannot leave the default in place without a word.
+#   memory       memory limit, swap off             as JAIL_MEMORY
+#   pids         process limit                      as JAIL_PIDS
+#   network      pasta or slirp4netns (claude-jail) as JAIL_NETWORK
+#   ro_paths     more paths to mount read-only      added to the defaults
+#   watch_paths  more paths for the exit report     added to the defaults
+# The two lists only add: a profile can protect more, never less, and a path
+# added to the defaults later also covers the projects that have a profile.
+# The environment wins over the profile, and JAIL_RO_PATHS and
+# JAIL_WATCH_PATHS still replace their whole list.
+JAIL_PROFILES_DIR="${JAIL_PROFILES_DIR:-$HOME/.config/dev-infra/projects}"
+JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths"
+
+# jail_profile_path: the profile file of the current directory, a project
+# under $DEV_PROJECTS (jail_guard checks that first).
+jail_profile_path() {
+  local here projects
+  here="$(pwd -P)"
+  projects="$(readlink -f "$DEV_PROJECTS")"
+  printf '%s/%s.conf\n' "$JAIL_PROFILES_DIR" "${here#"$projects"/}"
+}
+
+# jail_profile_check FILE: refuse a profile the jail could write: one that is,
+# or leads to, a path inside $DEV_PROJECTS. FILE need not exist yet; its
+# nearest existing parent is resolved.
+jail_profile_check() {
+  local path="$1" rest="" real projects
+  while [ ! -e "$path" ] && [ ! -L "$path" ]; do
+    rest="/$(basename "$path")$rest"
+    path="$(dirname "$path")"
+  done
+  real="$(readlink -f "$path")$rest"
+  projects="$(readlink -f "$DEV_PROJECTS")"
+  case "$real/" in
+    "$projects"/*) jail_die "the profile $1 is inside DEV_PROJECTS ($real), where the jail can write." \
+      "Keep profiles in ~/.config/dev-infra/projects, or point JAIL_PROFILES_DIR outside $DEV_PROJECTS." ;;
+  esac
+}
+
+# jail_trim VAR TEXT: TEXT without leading and trailing whitespace, into VAR.
+jail_trim() {
+  local s="$2"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf -v "$1" '%s' "$s"
+}
+
+# jail_profile_load: read the current project's profile, if it has one, into
+# JAIL_PROFILE_<key>. JAIL_PROFILE is its path and JAIL_PROFILE_SET the keys
+# it sets, both empty without a profile.
+jail_profile_load() {
+  local file line key value n=0 k
+  for k in $JAIL_PROFILE_KEYS; do unset "JAIL_PROFILE_$k"; done
+  JAIL_PROFILE="" JAIL_PROFILE_SET=""
+  file="$(jail_profile_path)"
+  [ -e "$file" ] || return 0
+  jail_profile_check "$file"
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    jail_die "the profile $file is not a file you can read."
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    jail_trim line "$line"
+    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in
+      *=*) ;;
+      *) jail_die "$file, line $n: expected 'key = value', got: $line" ;;
+    esac
+    jail_trim key "${line%%=*}"
+    jail_trim value "${line#*=}"
+    case " $JAIL_PROFILE_KEYS " in
+      *" $key "*) ;;
+      *) jail_die "$file, line $n: unknown key '$key'." "Known keys: $JAIL_PROFILE_KEYS" ;;
+    esac
+    case " $JAIL_PROFILE_SET " in
+      *" $key "*) jail_die "$file, line $n: '$key' is set twice." ;;
+    esac
+    case "$value" in
+      *'"'*|*"'"*|*'`'*|*'$'*|*\\*)
+        jail_die "$file, line $n: values are read literally and never run:" \
+          "no quotes, \$ or backslashes (got: $value)." ;;
+    esac
+    printf -v "JAIL_PROFILE_$key" '%s' "$value"
+    JAIL_PROFILE_SET="${JAIL_PROFILE_SET:+$JAIL_PROFILE_SET }$key"
+  done < "$file"
+  JAIL_PROFILE="$file"
+}
+
+# jail_pick VAR KEY DEFAULT: VAR as set in the environment, else KEY from the
+# profile, else DEFAULT. JAIL_FROM says which, for error messages.
+jail_pick() {
+  local key="JAIL_PROFILE_$2"
+  if [ -n "${!1:-}" ]; then
+    JAIL_FROM="$1"
+  elif [ -n "${!key:-}" ]; then
+    JAIL_FROM="$2 in $JAIL_PROFILE"
+    printf -v "$1" '%s' "${!key}"
+  else
+    JAIL_FROM="the default $1"
+    printf -v "$1" '%s' "$3"
+  fi
+}
+
+# jail_settings: the limits, network and path lists of this launch, from the
+# environment, else the project's profile, else the defaults. Checked here,
+# so a bad value stops the launch with a clear message instead of reaching
+# podman. Run by the launchers right after jail_guard, in the project.
+jail_settings() {
+  jail_profile_load
+  jail_pick JAIL_MEMORY memory "$JAIL_DEFAULT_MEMORY"
+  [[ $JAIL_MEMORY =~ ^[1-9][0-9]*[bkmgBKMG]?$ ]] ||
+    jail_die "$JAIL_FROM: '$JAIL_MEMORY' is not a memory size; write it like 8g or 512m."
+  jail_pick JAIL_PIDS pids "$JAIL_DEFAULT_PIDS"
+  [[ $JAIL_PIDS =~ ^[1-9][0-9]*$ ]] ||
+    jail_die "$JAIL_FROM: '$JAIL_PIDS' is not a process limit; write a whole number such as 2048." \
+      "There is no unlimited: -1 and 0 are refused."
+  jail_pick JAIL_NETWORK network ""
+  case "$JAIL_NETWORK" in
+    ''|pasta|slirp4netns) ;;
+    *) jail_die "$JAIL_FROM: '$JAIL_NETWORK' is not pasta or slirp4netns." \
+         "Other podman networks are refused: 'host', for one, gives the jail your host's network and its local services." ;;
+  esac
+  [ -n "${JAIL_RO_PATHS:-}" ] ||
+    JAIL_RO_PATHS="$JAIL_DEFAULT_RO_PATHS${JAIL_PROFILE_ro_paths:+ $JAIL_PROFILE_ro_paths}"
+  [ -n "${JAIL_WATCH_PATHS+set}" ] ||
+    JAIL_WATCH_PATHS="$JAIL_DEFAULT_WATCH_PATHS${JAIL_PROFILE_watch_paths:+ $JAIL_PROFILE_watch_paths}"
+  JAIL_FLAGS+=(--pids-limit "$JAIL_PIDS" --memory "$JAIL_MEMORY" --memory-swap "$JAIL_MEMORY")
+  if [ -n "$JAIL_PROFILE" ]; then
+    local set="${JAIL_PROFILE_SET// /, }"
+    printf 'Profile: %s (%s)\n' "$JAIL_PROFILE" "${set:-nothing set}" >&2
+  fi
+}
+
+# Each launcher runs jail_guard, jail_settings, jail_check_volumes and
+# jail_project_flags, then jail_watch_start, then passes "${JAIL_FLAGS[@]}"
+# "${JAIL_PROJECT_FLAGS[@]}" to podman run, followed by the image and the
+# launcher's own arguments (handed to claude).
 
 # =============================================================================
 # OPTIONAL — read-only rootfs (maximum isolation).

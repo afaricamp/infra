@@ -18,6 +18,7 @@ set -euo pipefail
 source "$(dirname "$(readlink -f "$0")")/../common.sh"
 
 jail_guard
+jail_settings
 jail_check_volumes
 jail_project_flags
 

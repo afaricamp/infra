@@ -70,7 +70,7 @@ HADOLINT       := docker.io/hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176ee
 # Reads image digests from the registries for 'make bump-images'.
 SKOPEO         := quay.io/skopeo/stable:v1.25.1@sha256:4784191278912fc8e8dd914fd28e65540c499798d59f688f97c7e1a22a259d38
 SCRIPTS        := dev.sh doctor.sh bump-images.sh claude-jail/common.sh claude-jail/launch_claude.sh \
-                  claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh \
+                  claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh claude-jail/profile.sh \
                   claude-jail/egress-hardening/setup-egress.sh claude-jail/egress-hardening/egress-log.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
                   tests/static/policy.sh tests/ci/setup-rootless-podman.sh \
@@ -90,7 +90,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
         build build-claude build-go build-php build-react build-vue egress egress-dev egress-log \
-        aliases devcontainer ai-sessions personal-skills fix-volumes verify doctor bump-images lint clean-images \
+        aliases devcontainer ai-sessions profile personal-skills fix-volumes verify doctor bump-images lint clean-images \
         test test-static test-unit test-integration test-all
 
 help: ## Show this help
@@ -268,6 +268,16 @@ ai-sessions: ## Add .ai-sessions/ to a project. Usage: make ai-sessions PROJECT=
 	   printf '%s\n' '# Local AI session notes (see .ai-sessions/README.md)' '.ai-sessions/*' '!.ai-sessions/README.md' >> "$$gi"; \
 	   echo "OK: .ai-sessions/ ignored in $$gi (except its README)"; \
 	 fi
+
+# Per-project settings for the jail (memory, pids, network, more read-only or
+# watched paths), kept outside the project in ~/.config/dev-infra/projects.
+# Writes one with every key commented out; an existing one is kept.
+profile: ## Write a commented jail profile for a project. Usage: make profile PROJECT=/path
+	@project=$(call shquote,PROJECT); \
+	 if [ -z "$$project" ]; then echo "ERROR: PROJECT missing. Usage: make profile PROJECT=/path"; exit 1; fi; \
+	 case "$$project" in "~"/*) project="$$HOME/$${project#\~/}";; esac; \
+	 DEV_PROJECTS="$(DEV_PROJECTS)" JAIL_PERSONAL_SKILLS_DIR="$(JAIL_PERSONAL_SKILLS_DIR)" \
+	   "$(CLAUDE_JAIL)/profile.sh" "$$project"
 
 # Your own Claude skills, for the jail: the launchers mount this copy read-only
 # over ~/.claude/skills. A copy and not a mount of the original because on
