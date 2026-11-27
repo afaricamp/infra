@@ -13,11 +13,11 @@
 #    devcontainers/vue: the jail runs the tests against the node_modules the
 #    dev container installed, and native modules only load on the Node ABI
 #    they were built for.
-FROM docker.io/library/golang:1.27-bookworm AS go-source
-FROM docker.io/library/node:24-bookworm AS node-source
+FROM docker.io/library/golang:1.27-bookworm@sha256:ce59b41415e2524ae99926fe1f37ce48ba8c194dcbd2a56a65436cdcefa2bd34 AS go-source
+FROM docker.io/library/node:24-bookworm@sha256:49f7adaf9f1574bc45c20ea317139b39a59d7e758d0e93745e112fd85cb42623 AS node-source
 
 # 2. Ubuntu base
-FROM docker.io/library/ubuntu:24.04
+FROM docker.io/library/ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
 
 # Copy Go across from the source image
 COPY --from=go-source /usr/local/go /usr/local/go

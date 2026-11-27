@@ -13,32 +13,48 @@ ok()  { printf 'ok    %s\n' "$1"; }
 check() { local what="$1"; shift; if "$@"; then ok "$what"; else bad "$what"; fi; }
 
 # Shell syntax of everything that is run or sourced.
-for f in dev.sh doctor.sh claude-jail/*.sh claude-jail/egress-hardening/*.sh tests/static/*.sh tests/unit/stubs/*; do
+for f in dev.sh doctor.sh bump-images.sh claude-jail/*.sh claude-jail/egress-hardening/*.sh tests/static/*.sh tests/unit/stubs/*; do
   if bash -n "$f"; then ok "bash -n $f"; else bad "bash -n $f"; fi
 done
 
 # Base images must be fully qualified: a short name like 'ubuntu:24.04' is
 # resolved through registries.conf, which differs between machines and can be
-# spoofed by a registry earlier in the search list.
+# spoofed by a registry earlier in the search list. And pinned: a tag can be
+# moved to other content, a digest cannot. 'name:tag@sha256:<index digest>',
+# the tag kept so that readers and 'make bump-images' know what it is.
+CONTAINERFILES=(claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy devcontainers/*/Containerfile tests/Containerfile)
+pinned() { [[ $1 =~ ^[^@]+:[^/@]+@sha256:[0-9a-f]{64}$ ]]; }
+# image_policy WHAT IMAGE
+image_policy() {
+  local registry=""
+  case "$2" in */*) registry="${2%%/*}" ;; esac
+  case "$registry" in
+    localhost) ok "$1 (local image)" ;;
+    *.*|*:*) if pinned "$2"; then ok "$1"; else bad "$1 is not pinned as name:tag@sha256:... (make bump-images)"; fi ;;
+    *) bad "$1 is not fully qualified" ;;
+  esac
+}
 while IFS= read -r line; do
   file="${line%%:*}"
   image="$(printf '%s\n' "${line#*:}" | awk '{print $2}')"
-  registry=""
-  case "$image" in */*) registry="${image%%/*}" ;; esac
-  case "$registry" in
-    *.*|*:*|localhost) ok "FROM $image ($file)" ;;
-    *) bad "FROM $image is not fully qualified ($file)" ;;
-  esac
-done < <(grep -H -E '^FROM ' claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy devcontainers/*/Containerfile tests/Containerfile)
+  image_policy "FROM $image ($file)" "$image"
+done < <(grep -H -E '^FROM ' "${CONTAINERFILES[@]}")
 
-# COPY --from=<image> pulls an image too: same rule.
+# COPY --from=<image> pulls an image too: same rules.
 while IFS= read -r line; do
   ref="$(printf '%s\n' "$line" | sed -E 's/.*--from=([^ ]+).*/\1/')"
   case "$ref" in
-    */*) case "${ref%%/*}" in *.*|*:*|localhost) ok "COPY --from=$ref" ;; *) bad "COPY --from=$ref is not fully qualified" ;; esac ;;
+    */*) image_policy "COPY --from=$ref" "$ref" ;;
     *)   ok "COPY --from=$ref (build stage)" ;;
   esac
-done < <(grep -h -E '^COPY --from=' claude-jail/Containerfile devcontainers/*/Containerfile || true)
+done < <(grep -h -E '^COPY .*--from=' "${CONTAINERFILES[@]}" || true)
+
+# The images the Makefile runs (lint, downloads, bump-images): same rules.
+while IFS= read -r line; do
+  name="$(printf '%s\n' "$line" | awk '{print $1}')"
+  image="$(printf '%s\n' "$line" | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')"
+  image_policy "Makefile $name = $image" "$image"
+done < <(grep -E '^[A-Z_]+[[:space:]]*:?=[[:space:]]*[a-z0-9-]+\.[a-z0-9.-]+(:[0-9]+)?/' Makefile)
 
 # Every devcontainer.json parses, names an image we build, and keeps the
 # hardening flags the README promises.
