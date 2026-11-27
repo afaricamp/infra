@@ -65,6 +65,27 @@ in_zsh() {
   cmp "$REPO/devcontainers/vue/devcontainer.json" "$DEV_PROJECTS/my-web/.devcontainer/devcontainer.json"
 }
 
+@test "newproj-mono: one repo at the root, a devcontainer per part, cds into the root" {
+  in_devsh 'newproj-mono my-web go:api react:web >/dev/null && pwd'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$DEV_PROJECTS/my-web" ]
+  cmp "$REPO/devcontainers/go/devcontainer.json" "$DEV_PROJECTS/my-web/api/.devcontainer/devcontainer.json"
+  cmp "$REPO/devcontainers/react/devcontainer.json" "$DEV_PROJECTS/my-web/web/.devcontainer/devcontainer.json"
+  [ -d "$DEV_PROJECTS/my-web/.git" ]
+  [ ! -e "$DEV_PROJECTS/my-web/api/.git" ]
+  [ ! -e "$DEV_PROJECTS/my-web/.devcontainer" ]
+  cmp "$REPO/devkit/templates/ai-sessions/README.md" "$DEV_PROJECTS/my-web/.ai-sessions/README.md"
+}
+
+@test "newproj-mono: refuses bad input before creating anything" {
+  for args in '' 'my-web' '../x go:api' 'my-web go' 'my-web rust:api' 'my-web react/../go:api' \
+              'my-web go:../x' 'my-web go:a/b' 'my-web go:.hidden' 'my-web go:' 'my-web go:api react:api'; do
+    in_devsh "newproj-mono $args"
+    [ "$status" -ne 0 ] || { echo "accepted: newproj-mono $args" >&2; false; }
+  done
+  [ -z "$(ls -A "$DEV_PROJECTS")" ]
+}
+
 @test "newproj: creates the project with its devcontainer and a git repo, and cds into it" {
   in_devsh 'newproj-react my-ui >/dev/null && pwd'
   [ "$status" -eq 0 ]
@@ -118,4 +139,11 @@ in_zsh() {
   in_zsh "newproj-go '../escape'"
   [ "$status" -eq 1 ]
   [ ! -e "$BATS_TEST_TMPDIR/escape" ]
+}
+
+@test "zsh: newproj-mono works" {
+  in_zsh 'newproj-mono zsh-web go:api vue:web >/dev/null && pwd'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$DEV_PROJECTS/zsh-web" ]
+  [ -f "$DEV_PROJECTS/zsh-web/web/.devcontainer/devcontainer.json" ]
 }

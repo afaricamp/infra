@@ -101,3 +101,58 @@ newproj-go()    { _newproj go    "$1"; }
 newproj-php()   { _newproj php   "$1"; }
 newproj-react() { _newproj react "$1"; }
 newproj-vue()   { _newproj vue   "$1"; }
+
+# --- Monorepo: one git repo, one dev container per part ---
+# usage:  newproj-mono my-web go:api react:web
+# Each <type>:<dir> gets <dir>/.devcontainer/devcontainer.json of that type.
+# Open each <dir> in Gateway, and run the jail from the project root, where
+# Claude sees every part; the launchers keep each <dir>/.devcontainer
+# read-only. Every part is checked before anything is created.
+newproj-mono() {
+  local usage="usage: newproj-mono <name> <type>:<dir> [<type>:<dir>...]   e.g. newproj-mono my-web go:api react:web"
+  local name="${1:-}" spec type dir dirs=" "
+  case "$name" in
+    ''|*/*|.*) echo "$usage" >&2; return 1 ;;
+  esac
+  shift
+  if [ $# -eq 0 ]; then echo "$usage" >&2; return 1; fi
+
+  for spec in "$@"; do
+    case "$spec" in
+      *:*) ;;
+      *) echo "newproj-mono: '$spec' is not <type>:<dir>" >&2; return 1 ;;
+    esac
+    type="${spec%%:*}"
+    dir="${spec#*:}"
+    case "$type" in ''|*/*|.*) type="-" ;; esac   # a type is a plain name, never a path
+    if [ ! -f "$DEV_DEVCONTAINERS/$type/devcontainer.json" ]; then
+      local available="" t
+      for t in "$DEV_DEVCONTAINERS"/*/devcontainer.json; do
+        t="${t%/devcontainer.json}"
+        available="$available ${t##*/}"
+      done
+      echo "newproj-mono: unknown type '$type'. Available:$available" >&2
+      return 1
+    fi
+    case "$dir" in
+      ''|*/*|.*) echo "newproj-mono: '$dir' has to be a plain directory name" >&2; return 1 ;;
+    esac
+    case "$dirs" in
+      *" $dir "*) echo "newproj-mono: '$dir' is used twice" >&2; return 1 ;;
+    esac
+    dirs="$dirs$dir "
+  done
+
+  local d="$DEV_PROJECTS/$name"
+  mkdir -p "$d" || return 1
+  for spec in "$@"; do
+    make -C "$DEV_INFRA" --no-print-directory devcontainer PROJECT="$d/${spec#*:}" TYPE="${spec%%:*}" || return 1
+  done
+  make -C "$DEV_INFRA" --no-print-directory ai-sessions PROJECT="$d" >/dev/null || return 1
+  if [ ! -d "$d/.git" ]; then
+    ( cd "$d" && git init -q ) || return 1
+  fi
+
+  cd "$d" || return 1
+  echo "monorepo ready at $d: open each part in Gateway as a Dev Container, and run the jail from here."
+}

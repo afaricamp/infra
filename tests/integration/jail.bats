@@ -50,7 +50,7 @@ setup() {
 }
 
 @test "host-executed paths are read-only inside the jail" {
-  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer" "$PROJ/.claude"
+  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer" "$PROJ/.claude" "$PROJ/api/.devcontainer"
   echo '[core]' > "$PROJ/.git/config"
   echo '{}' > "$PROJ/.devcontainer/devcontainer.json"
   echo '{}' > "$PROJ/.claude/settings.json"
@@ -61,7 +61,8 @@ setup() {
              'echo "{}" > .devcontainer/devcontainer.json' \
              'touch .devcontainer/extra' \
              'echo evil >> .envrc' \
-             'echo "{\"hooks\": {}}" > .claude/settings.json'; do
+             'echo "{\"hooks\": {}}" > .claude/settings.json' \
+             'touch api/.devcontainer/devcontainer.json'; do
     jail sh -c "$cmd"
     [ "$status" -ne 0 ] || { echo "writable: $cmd" >&2; false; }
   done
@@ -69,6 +70,7 @@ setup() {
   [ "$(cat "$PROJ/.git/config")" = '[core]' ]
   [ ! -s "$PROJ/.envrc" ]
   [ "$(cat "$PROJ/.claude/settings.json")" = '{}' ]
+  [ ! -e "$PROJ/api/.devcontainer/devcontainer.json" ]
 
   # The rest of .git and .claude stays writable: Claude can still commit and
   # keep its project settings.
