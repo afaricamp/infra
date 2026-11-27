@@ -193,10 +193,6 @@ skills_src() {
   not grep -qE 'USER_ID|GROUP_ID' <<<"$output"
 }
 
-@test "build-claude: tags JAIL_IMAGE" {
-  run make_repo -n build-claude JAIL_IMAGE=localhost/claude-jail:x
-  contains "$output" "podman build -t localhost/claude-jail:x"
-}
 
 # --- aliases / verify -------------------------------------------------------------
 
@@ -302,7 +298,45 @@ fake_bin() {
   run make_repo build-claude CLAUDE_JAIL="$CJ" JAIL_IMAGE=localhost/claude-jail:x
   [ "$status" -eq 0 ]
   contains "$output" "2.1.332 (linux-x64): SHA-256 matches the release manifest, architecture matches podman"
-  grep -q '^build -t localhost/claude-jail:x' "$STUB_LOG"
+  grep -q '^build --build-arg VARIANT=full -t localhost/claude-jail:x ' "$STUB_LOG"
+}
+
+@test "build-claude: builds the four variants, full as JAIL_IMAGE and the others with their name added" {
+  fake_bin linux-x64
+  export STUB_ARCH=amd64
+  run make_repo build-claude CLAUDE_JAIL="$CJ"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [ "$(grep '^build ' "$STUB_LOG" | cut -d' ' -f3,5 | paste -sd'|' -)" = \
+    "VARIANT=full localhost/claude-jail:latest|VARIANT=go localhost/claude-jail-go:latest|VARIANT=node localhost/claude-jail-node:latest|VARIANT=php localhost/claude-jail-php:latest" ]
+  [ "$(grep -c "^build .* $CJ\$" "$STUB_LOG")" -eq 4 ]
+
+  # A tag stays a tag; a registry's port is not one.
+  : > "$STUB_LOG"
+  run make_repo build-claude CLAUDE_JAIL="$CJ" VARIANT=php JAIL_IMAGE=registry.example:5000/jail
+  [ "$status" -eq 0 ]
+  [ "$(grep '^build ' "$STUB_LOG" | cut -d' ' -f5)" = registry.example:5000/jail-php ]
+  : > "$STUB_LOG"
+  run make_repo build-claude CLAUDE_JAIL="$CJ" VARIANT=go JAIL_IMAGE=localhost/claude-jail:test
+  [ "$(grep '^build ' "$STUB_LOG" | cut -d' ' -f5)" = localhost/claude-jail-go:test ]
+}
+
+@test "build-claude: VARIANT builds only that one; an unknown one, or code, builds nothing" {
+  fake_bin linux-x64
+  export STUB_ARCH=amd64
+  run make_repo build-claude CLAUDE_JAIL="$CJ" VARIANT=node
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^build ' "$STUB_LOG")" -eq 1 ]
+  grep -q '^build --build-arg VARIANT=node -t localhost/claude-jail-node:latest ' "$STUB_LOG"
+
+  : > "$STUB_LOG"
+  for bad in ruby 'php;id' '$(shell touch '"$BATS_TEST_TMPDIR"'/made)'; do
+    run make_repo build-claude CLAUDE_JAIL="$CJ" VARIANT="$bad"
+    [ "$status" -ne 0 ] || { echo "accepted: $bad" >&2; false; }
+    contains "$output" "unknown VARIANT"
+  done
+  not grep -q '^build ' "$STUB_LOG"
+  [ ! -e "$BATS_TEST_TMPDIR/made" ]
 }
 
 @test "build-claude: refuses an x86-64 binary where podman runs arm64 (copied from another machine)" {

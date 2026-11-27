@@ -36,7 +36,7 @@ mkdir -p "$(dirname "$file")"
 # read literally and never run: no quotes, \$ or backslashes. An unknown key
 # stops the launch. An environment variable (JAIL_MEMORY, JAIL_PIDS,
 # JAIL_NETWORK, JAIL_RO_PATHS, JAIL_WATCH_PATHS, JAIL_ALLOWLIST,
-# JAIL_MCP_SERVERS) wins over this file.
+# JAIL_MCP_SERVERS, JAIL_VARIANT) wins over this file.
 
 # Memory limit, swap off. Default: $JAIL_DEFAULT_MEMORY.
 # memory = 8g
@@ -74,6 +74,11 @@ EOF
 # folders in mcp/ ('make mcp-list'), each one started with 'make mcp-up
 # NAME=<name>'. claude-jail ignores it. Default: none.
 # mcp = context7
+
+# The jail image: full (Go and Node), go, node or php (PHP and Composer,
+# as in the php dev container). 'make build-claude' builds them all.
+# Default: full.
+# image = php
 EOF
 } > "$file"
 

@@ -37,10 +37,19 @@ image_policy() {
     *) bad "$1 is not fully qualified" ;;
   esac
 }
+# A FROM can also name a build stage of the same file ('FROM ubuntu-base AS
+# go-tools'), or the one a build argument picks ('FROM ${VARIANT}-tools',
+# when stages with that suffix exist): those pull nothing.
 while IFS= read -r line; do
   file="${line%%:*}"
   image="$(printf '%s\n' "${line#*:}" | awk '{print $2}')"
-  image_policy "FROM $image ($file)" "$image"
+  if grep -qiE "^FROM .* AS $image\$" "$file"; then
+    ok "FROM $image ($file, a build stage)"
+  elif [[ $image =~ ^\$\{[A-Z_]+\}(-[a-z0-9-]+)$ ]] && grep -qiE "^FROM .* AS [a-z0-9-]+${BASH_REMATCH[1]}\$" "$file"; then
+    ok "FROM $image ($file, the build stage its argument picks)"
+  else
+    image_policy "FROM $image ($file)" "$image"
+  fi
 done < <(grep -H -E '^FROM ' "${CONTAINERFILES[@]}")
 
 # COPY --from=<image> pulls an image too: same rules.
@@ -71,6 +80,22 @@ if grep -qxF '  proxy_set_header Authorization "";' "$CACHE_CONF" &&
   headers_ok=yes
 fi
 check "$CACHE_CONF drops Authorization and Cookie, and sets proxy headers only at the http level" [ "$headers_ok" = yes ]
+
+# The jail runs the tests against what the dev containers installed, so its
+# toolchains match theirs: the php variant uses the php dev container's PHP
+# and Composer images (same tag and digest), and Node has the same major as
+# in the react and vue ones.
+jail_cf=claude-jail/Containerfile
+for img in php composer; do
+  jail_ref="$(grep -oE "docker\.io/library/$img:[^ ]+" "$jail_cf" | head -n 1)"
+  dc_ref="$(grep -oE "docker\.io/library/$img:[^ ]+" devcontainers/php/Containerfile | head -n 1)"
+  check "the jail's $img image is the php dev container's ($dc_ref)" [ "${jail_ref:-none}" = "$dc_ref" ]
+done
+jail_node="$(grep -oE 'library/node:[0-9]+' "$jail_cf" | head -n 1)"
+for dc in react vue; do
+  check "the jail's Node major is the $dc dev container's ($jail_node)" \
+    grep -q "$jail_node" "devcontainers/$dc/Containerfile"
+done
 
 # Every MCP server definition in mcp/ can be started: a usable name (as
 # JAIL_MCP_NAME_RE in common.sh), a Containerfile and an mcp.conf. One built

@@ -443,12 +443,14 @@ jail_watch_report() {
 #                                                   "Per-project allowlist")
 #   mcp          MCP servers for claude-jailed      as JAIL_MCP_SERVERS (see
 #                                                   "MCP servers")
+#   image        full, go, node or php              as JAIL_VARIANT (see
+#                                                   "Image variants")
 # The two lists only add: a profile can protect more, never less, and a path
 # added to the defaults later also covers the projects that have a profile.
 # The environment wins over the profile, and JAIL_RO_PATHS and
 # JAIL_WATCH_PATHS still replace their whole list.
 JAIL_PROFILES_DIR="${JAIL_PROFILES_DIR:-$HOME/.config/dev-infra/projects}"
-JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths allowlist mcp"
+JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths allowlist mcp image"
 
 # jail_profile_path: the profile file of the current directory, a project
 # under $DEV_PROJECTS (jail_guard checks that first).
@@ -589,11 +591,65 @@ jail_settings() {
   jail_allowlist_build "$JAIL_EGRESS_DIR/allowlist"
   jail_pick JAIL_MCP_SERVERS mcp ""
   jail_mcp_list_check
+  JAIL_MCP_FROM="$JAIL_FROM"
+  jail_pick JAIL_VARIANT image full
+  jail_variant_pick
   JAIL_FLAGS+=(--pids-limit "$JAIL_PIDS" --memory "$JAIL_MEMORY" --memory-swap "$JAIL_MEMORY")
   if [ -n "$JAIL_PROFILE" ]; then
     local set="${JAIL_PROFILE_SET// /, }"
     printf 'Profile: %s (%s)\n' "$JAIL_PROFILE" "${set:-nothing set}" >&2
   fi
+}
+
+# --- Image variants ---
+# The jail image comes in four variants, built from one Containerfile by
+# 'make build-claude': full (Go and Node, the default), go, node and php.
+# 'image' in a project's profile (or JAIL_VARIANT) picks one. full is
+# JAIL_IMAGE itself; the others add the variant to its name:
+# localhost/claude-jail:latest -> localhost/claude-jail-php:latest. They
+# share the volumes: each tool keeps its cache in its own folder of ~/.cache.
+JAIL_VARIANTS="full go node php"
+
+# jail_variant_image BASE VARIANT: the image of VARIANT when full is BASE.
+jail_variant_image() {
+  local name="$1" tag=""
+  if [ "$2" = full ]; then printf '%s\n' "$name"; return 0; fi
+  # A tag is a ':' in the last part of the name (not a registry's port).
+  case "${name##*/}" in *:*) tag=":${name##*:}" name="${name%:*}" ;; esac
+  printf '%s-%s%s\n' "$name" "$2" "$tag"
+}
+
+# jail_variant_pick: JAIL_VARIANT checked, JAIL_IMAGE pointed at its image,
+# which has to be built. Then a note when the project has a file whose tool
+# this image lacks: composer.json without PHP, go.mod without Go, or
+# package.json in the go image. Run by jail_settings, in the project, after
+# jail_pick has set JAIL_VARIANT.
+# shellcheck disable=SC2153
+jail_variant_pick() {
+  case " $JAIL_VARIANTS " in
+    *" $JAIL_VARIANT "*) ;;
+    *) jail_die "$JAIL_FROM: '$JAIL_VARIANT' is not an image variant: full, go, node or php." ;;
+  esac
+  JAIL_IMAGE="$(jail_variant_image "$JAIL_IMAGE" "$JAIL_VARIANT")"
+  podman image exists "$JAIL_IMAGE" 2>/dev/null ||
+    jail_die "the jail image $JAIL_IMAGE is not built." \
+      "Build it with 'make build-claude VARIANT=$JAIL_VARIANT' (or all of them with 'make build-claude')."
+  [ "$JAIL_VARIANT" = full ] || printf 'Image: %s (%s)\n' "$JAIL_VARIANT" "$JAIL_IMAGE" >&2
+  case "$JAIL_VARIANT" in
+    full|go|node) [ ! -f composer.json ] || jail_variant_note composer.json "PHP and Composer" php ;;
+  esac
+  case "$JAIL_VARIANT" in
+    node|php) [ ! -f go.mod ] || jail_variant_note go.mod Go "go (or full)" ;;
+    go) [ ! -f package.json ] || jail_variant_note package.json Node "full (or node)" ;;
+  esac
+  return 0
+}
+
+# jail_variant_note FILE TOOL VARIANT: the project has FILE, this image has
+# no TOOL, and 'image = VARIANT' would give it.
+jail_variant_note() {
+  printf "NOTE: this project has %s, and the '%s' image has no %s.\n" "$1" "$JAIL_VARIANT" "$2" >&2
+  printf "      'image = %s' in its profile (make profile) picks one that has.\n" "$3" >&2
 }
 
 # --- Per-project allowlist (claude-jailed) ---
@@ -861,7 +917,7 @@ jail_mcp_flags() {
   for n in $JAIL_MCP_SERVERS; do
     server="$JAIL_MCP_PREFIX-$n" net="$JAIL_NET_INTERNAL-mcp-$n"
     [ "$(podman container inspect -f '{{.State.Running}}' "$server" 2>/dev/null)" = true ] ||
-      jail_die "the MCP server '$n' is not running ($JAIL_FROM)." \
+      jail_die "the MCP server '$n' is not running ($JAIL_MCP_FROM)." \
         "Start it with 'make mcp-up NAME=$n' (after a reboot too), then launch again."
     ip="$(jail_ip_on "$net" "$server")"
     [ -n "$ip" ] || jail_die "the MCP server $server is not on $net." \

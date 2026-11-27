@@ -139,7 +139,7 @@ line_of() { grep -nxF -- "$1" "$STUB_LOG" | head -n 1 | cut -d: -f1; }
   not grep -q '^create \|^network create ' "$STUB_LOG"
   not podman_ran
 
-  export STUB_NETWORKS="jail-internal jail-egress" STUB_IMAGE_EXISTS=1
+  export STUB_NETWORKS="jail-internal jail-egress" STUB_IMAGES_MISSING=claude-egress-proxy
   launch_jailed
   [ "$status" -eq 1 ]
   contains "$output" "Run 'make egress' once"

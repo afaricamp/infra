@@ -51,13 +51,16 @@ podman_selinux() {
   [ "$(podman info --format '{{.Host.Security.SELinuxEnabled}}' 2>/dev/null)" = true ]
 }
 
-# Build the jail image with the stub instead of the real binary, from a
-# throwaway context so claude-jail/claude-bin is never touched.
+# build_jail_image [VARIANT]: build the jail image (full by default, or the
+# go, node or php variant) with the stub instead of the real binary, from a
+# throwaway context so claude-jail/claude-bin is never touched. A variant is
+# tagged like the launchers expect: localhost/claude-jail-php:test.
 build_jail_image() {
-  local ctx="$BATS_FILE_TMPDIR/jail-context"
+  local variant="${1:-full}" ctx="$BATS_FILE_TMPDIR/jail-context" image="$JAIL_IMAGE"
+  [ "$variant" = full ] || image="${JAIL_IMAGE%:*}-$variant:${JAIL_IMAGE##*:}"
   mkdir -p "$ctx"
   cp "$REPO/tests/integration/fixtures/claude-stub" "$ctx/claude-bin"
-  podman build -q -t "$JAIL_IMAGE" -f "$REPO/claude-jail/Containerfile" "$ctx" >/dev/null
+  podman build -q --build-arg VARIANT="$variant" -t "$image" -f "$REPO/claude-jail/Containerfile" "$ctx" >/dev/null
 }
 
 remove_test_volumes() {
