@@ -49,6 +49,13 @@ fi
 PROXY_URL="http://$JAIL_PROXY:8888"
 NO_PROXY_HOSTS="localhost,127.0.0.1"
 
+# The MCP servers the project lists ('mcp' in its profile, or
+# JAIL_MCP_SERVERS), started with 'make mcp-up': the jail joins each one's
+# network, reaches it directly (NO_PROXY), and Claude gets them through
+# --mcp-config. See "MCP servers" in common.sh.
+jail_mcp_flags
+NO_PROXY_HOSTS="$NO_PROXY_HOSTS$JAIL_MCP_HOSTS"
+
 # The dependency cache ('make caches'), when it runs: Go modules and npm
 # packages come from it, so the strict allowlist is enough to build. Optional:
 # without it, the proxy's allowlist decides as before. Reached directly, not
@@ -89,8 +96,11 @@ fi
 # Report the host-run files Claude changed, when the container exits.
 jail_watch_start
 
-# Arguments are handed to claude: 'claude-jailed --resume', 'claude-jailed -p ...'
+# Arguments are handed to claude: 'claude-jailed --resume', 'claude-jailed -p ...',
+# after the MCP servers' --mcp-config, if any.
 # The label tells 'make egress-prune' which proxy this jail is using.
+# JAIL_MCP_CONFIG is one argument; the quotes in it are JSON, for claude.
+# shellcheck disable=SC2090
 podman run --rm \
   "${JAIL_FLAGS[@]}" \
   --label "dev-infra.proxy=$JAIL_PROXY" \
@@ -103,5 +113,6 @@ podman run --rm \
   -e NO_PROXY="$NO_PROXY_HOSTS" \
   -e no_proxy="$NO_PROXY_HOSTS" \
   ${CACHE_FLAGS[@]+"${CACHE_FLAGS[@]}"} \
+  ${JAIL_MCP_FLAGS[@]+"${JAIL_MCP_FLAGS[@]}"} \
   "${JAIL_PROJECT_FLAGS[@]}" \
-  "$JAIL_IMAGE" "$@"
+  "$JAIL_IMAGE" ${JAIL_MCP_CONFIG:+"$JAIL_MCP_CONFIG"} "$@"

@@ -52,13 +52,24 @@
 #   STUB_CREATE_FAIL      set: 'create' fails
 #   STUB_PROJECT_NETS     what 'network ls --filter label=dev-infra.proxy-group=...'
 #                         lists: their internal networks
-#   'create' adds the name to STUB_LOG.created and its arguments to
-#   STUB_LOG.create; 'start' adds to STUB_LOG.started; 'cp' copies its source
-#   to STUB_LOG.cp and its mode to STUB_LOG.cp.mode; 'rm -f' adds to
-#   STUB_LOG.rmed, after which they no longer exist.
+#   MCP servers ($JAIL_MCP_PREFIX-<name>, default claude-mcp-) and their
+#   proxies ($JAIL_PROXY-mcp-<name>, handled like the per-project ones):
+#   STUB_MCP_RUNNING      space-separated names (context7, not the container)
+#                         that already run
+#   STUB_MCP_IP           their address on $JAIL_NET_INTERNAL-mcp-<name>
+#                         (10.89.2.5; empty: not on it)
+#   STUB_MCP_URL          their dev-infra.mcp.url label (default
+#                         http://<container>:8080/mcp)
+#   STUB_MCP_DIES         set: a server 'run -d' starts stops at once
+#   Containers: 'create', 'start', 'run -d --name' and 'rm -f' add "NAME
+#   created|started|removed" to STUB_LOG.events, and the last one says what
+#   state a container is in. 'create' also writes its arguments to
+#   STUB_LOG.create; 'cp' copies its source to STUB_LOG.cp and its mode to
+#   STUB_LOG.cp.mode.
 #   'network connect NET NAME' adds "NET NAME" to STUB_LOG.connected. The
 #   cache is on $JAIL_NET_INTERNAL (default jail-internal) and on the
-#   networks it was connected to.
+#   networks it was connected to. STUB_NET_RM_FAIL=1 makes every 'network rm'
+#   fail, STUB_NET_RM_FAIL=<net> only that one.
 log="${STUB_LOG:-/dev/null}"
 printf '%s\n' "$*" >> "$log"
 last="${*: -1}"
@@ -68,18 +79,32 @@ volume_exists() {
   return 1
 }
 
-project_proxy() { [[ $1 =~ -[0-9a-f]{12}$ ]]; }
+project_proxy() { [[ $1 =~ -[0-9a-f]{12}$ || $1 == "${JAIL_PROXY:-claude-proxy}-mcp-"* ]]; }
+mcp_server() { [[ $1 == "${JAIL_MCP_PREFIX:-claude-mcp}-"* ]]; }
 listed() { grep -qxF -- "$1" "$log.$2" 2>/dev/null; }
+record() { [ "$log" = /dev/null ] || printf '%s\n' "$2" >> "$log.$1"; }
+# last_event NAME: created, started or removed, whichever came last; empty
+# when nothing happened to NAME here.
+last_event() { sed -n "s/^$1 //p" "$log.events" 2>/dev/null | tail -n 1; }
 pp_exists() {
-  listed "$1" rmed && return 1
+  case "$(last_event "$1")" in removed) return 1 ;; ?*) return 0 ;; esac
   case " ${STUB_PROJECT_PROXIES:-} " in *" $1 "*) return 0 ;; esac
-  listed "$1" created
+  return 1
 }
 pp_running() {
-  listed "$1" started && return 0
+  case "$(last_event "$1")" in started) return 0 ;; ?*) return 1 ;; esac
   case " ${STUB_PROJECT_PROXIES:-} " in *" $1 "*) [ -z "${STUB_PROJECT_STOPPED:-}" ] ;; *) return 1 ;; esac
 }
-record() { [ "$log" = /dev/null ] || printf '%s\n' "$2" >> "$log.$1"; }
+mcp_exists() {
+  case "$(last_event "$1")" in removed) return 1 ;; ?*) return 0 ;; esac
+  case " ${STUB_MCP_RUNNING:-} " in *" ${1#"${JAIL_MCP_PREFIX:-claude-mcp}-"} "*) return 0 ;; esac
+  return 1
+}
+mcp_running() {
+  case "$(last_event "$1")" in started) [ -z "${STUB_MCP_DIES:-}" ]; return ;; ?*) return 1 ;; esac
+  case " ${STUB_MCP_RUNNING:-} " in *" ${1#"${JAIL_MCP_PREFIX:-claude-mcp}-"} "*) return 0 ;; esac
+  return 1
+}
 # asked_net: the network in a '{{... .NetworkSettings.Networks "NET" ...}}' template.
 asked_net() { sed -n 's/.*Networks "\([^"]*\)".*/\1/p' <<<"$*"; }
 cache_on() {
@@ -99,9 +124,22 @@ case "$1 ${2:-}" in
         *IPAddress*) echo "${STUB_PROJECT_PROXY_IP-10.89.0.4}" ;;
         *State.Status*)
           if pp_running "$last"; then echo running
-          elif listed "$last" created || [ -n "${STUB_PROJECT_NEVER_STARTED:-}" ]; then echo created
+          elif [ "$(last_event "$last")" = created ] || [ -n "${STUB_PROJECT_NEVER_STARTED:-}" ]; then echo created
           else echo exited; fi ;;
         *) if pp_running "$last"; then echo true; else echo false; fi ;;
+      esac
+      exit 0
+    fi
+    if mcp_server "$last"; then
+      mcp_exists "$last" || exit 125
+      case "$*" in
+        *IPAddress*)
+          if [ "$(asked_net "$*")" = "${JAIL_NET_INTERNAL:-jail-internal}-mcp-${last#"${JAIL_MCP_PREFIX:-claude-mcp}-"}" ]; then
+            echo "${STUB_MCP_IP-10.89.2.5}"
+          else echo; fi ;;
+        *dev-infra.mcp.url*) echo "${STUB_MCP_URL-http://$last:8080/mcp}" ;;
+        *State.Status*) if mcp_running "$last"; then echo running; else echo exited; fi ;;
+        *) if mcp_running "$last"; then echo true; else echo false; fi ;;
       esac
       exit 0
     fi
@@ -145,6 +183,7 @@ case "$1 ${2:-}" in
     printf '%s\n' "${STUB_MACHINE_MOUNTS:-}" ;;
   "container exists")
     if project_proxy "$last"; then pp_exists "$last"; exit; fi
+    if mcp_server "$last"; then mcp_exists "$last"; exit; fi
     if [ "$last" = "${JAIL_CACHE:-claude-cache}" ]; then [ -n "${STUB_CACHE_RUNNING:-}" ]; exit; fi
     [ -n "${STUB_PROXY_RUNNING:-}" ] ;;
   logs\ *)
@@ -165,22 +204,27 @@ case "$1 ${2:-}" in
   "network inspect")
     echo "${STUB_NET_DNS:-false}" ;;
   "network rm")
-    [ -z "${STUB_NET_RM_FAIL:-}" ] || exit 2
+    case "${STUB_NET_RM_FAIL:-}" in '') ;; 1|"$last") exit 2 ;; esac
     [ "$log" = /dev/null ] || printf '%s\n' "$last" >> "$log.removed" ;;
   "network create")
+    # Made again after a 'network rm': it exists again.
+    if listed "$last" removed; then
+      grep -vxF -- "$last" "$log.removed" > "$log.removed.tmp" || true
+      mv "$log.removed.tmp" "$log.removed"
+    fi
     record netcreated "$last" ;;
   "network connect")
     record connected "$3 $4" ;;
   "rm -f")
     shift 2
-    for name in "$@"; do record rmed "$name"; done ;;
+    for name in "$@"; do record events "$name removed"; done ;;
   "network disconnect"|build\ *)
     ;;
   create\ *)
     [ -z "${STUB_CREATE_FAIL:-}" ] || { echo "Error: creating container storage: the stub says no" >&2; exit 125; }
     prev=""
     for arg in "$@"; do
-      [ "$prev" = --name ] && record created "$arg"
+      [ "$prev" = --name ] && record events "$arg created"
       prev="$arg"
     done
     [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.create"
@@ -194,7 +238,7 @@ case "$1 ${2:-}" in
     fi ;;
   start\ *)
     shift
-    for name in "$@"; do record started "$name"; done ;;
+    for name in "$@"; do record events "$name started"; done ;;
   ps\ *)
     case "$*" in
       *"label=dev-infra.proxy-group="*)
@@ -237,6 +281,15 @@ case "$1 ${2:-}" in
         exit "$status" ;;
     esac
     [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.run"
+    # A detached one ('run -d --name NAME'): it runs from now on.
+    if [ "${1:-}" = -d ]; then
+      prev=""
+      for arg in "$@"; do
+        [ "$prev" = --name ] && record events "$arg started"
+        prev="$arg"
+      done
+      exit 0
+    fi
     [ -z "${STUB_RUN_EFFECT:-}" ] || sh -c "$STUB_RUN_EFFECT"
     exit "${STUB_RUN_EXIT:-0}" ;;
   *)

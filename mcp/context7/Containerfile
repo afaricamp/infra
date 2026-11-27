@@ -1,0 +1,28 @@
+# =============================================================================
+# Context7 (https://github.com/upstash/context7, MIT): current documentation
+# and code examples for libraries, looked up on context7.com. Serves MCP over
+# HTTP on port 8080, path /mcp. 'make mcp-up NAME=context7' builds and starts
+# it for claude-jailed; see mcp/README.md.
+#
+# The package and each of its dependencies come from package-lock.json and
+# are checked against the checksums in it ('npm ci'). No install script runs.
+# To move to a new version: mcp/README.md, "Updating a server".
+# =============================================================================
+FROM docker.io/library/node:24-bookworm@sha256:49f7adaf9f1574bc45c20ea317139b39a59d7e758d0e93745e112fd85cb42623
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier \
+      --cache /tmp/npm-cache && rm -rf /tmp/npm-cache
+
+# Over HTTP it asks every client to sign in, unless MCP_AUTH_ENFORCEMENT is
+# 'observe': then /mcp also answers without an API key, within Context7's
+# limits for anonymous use. Its telemetry off. It listens on every address of
+# its container: the jails reach it on the server's own network (see "MCP
+# servers" in common.sh).
+ENV NODE_ENV=production \
+    MCP_AUTH_ENFORCEMENT=observe \
+    OTEL_SDK_DISABLED=true
+USER node
+EXPOSE 8080
+ENTRYPOINT ["node", "/app/node_modules/@upstash/context7-mcp/dist/index.js", "--transport", "http", "--port", "8080"]

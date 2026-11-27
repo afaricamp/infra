@@ -1,0 +1,11 @@
+# Stand-in MCP server for tests/integration/mcp.bats: not MCP, just an HTTP
+# server that answers GET /mcp, with python3 and its CA certificates so the
+# tests can try the internet from inside it (urllib honours HTTPS_PROXY).
+FROM docker.io/library/ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir /srv/probe && echo probe > /srv/probe/mcp
+
+EXPOSE 8080
+ENTRYPOINT ["python3", "-m", "http.server", "8080", "--directory", "/srv/probe"]

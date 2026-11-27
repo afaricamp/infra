@@ -14,6 +14,7 @@ export JAIL_NET_INTERNAL="claudetest-internal"
 export JAIL_NET_EGRESS="claudetest-egress"
 export JAIL_CACHE="claudetest-cache"
 export JAIL_CACHE_IMAGE="localhost/claudetest-dep-cache:latest"
+export JAIL_MCP_PREFIX="claudetest-mcp"
 TEST_VOLUMES=(claudetest-home claudetest-gopath claudetest-gocache)
 # Your own personal-skills/ folder is never mounted into a test jail; the
 # test that needs one points this at its own.
@@ -111,6 +112,9 @@ check_writer() {
   fi
   [ "$(wc -l < "$2" | tr -d " ")" -eq "$WRITES" ]
 }
+
+# ip_on NET CONTAINER: its address on NET, empty when it is not on it.
+ip_on() { podman container inspect -f "{{with index .NetworkSettings.Networks \"$1\"}}{{.IPAddress}}{{end}}" "$2"; }
 
 # jail CMD...: run CMD inside the normal-network jail, from the project.
 jail()        { run bash -c 'cd "$1" && shift && "$@"' _ "$PROJ" "$REPO/claude-jail/launch_claude.sh" "$@"; }

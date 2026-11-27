@@ -140,9 +140,6 @@ project_proxy() { sed -nE "s/^Proxy: ($JAIL_PROXY-[0-9a-f]{12}), .*/\1/p" <<<"$o
   not grep -q '^Proxy:' <<<"$output"
 }
 
-# ip_on NET CONTAINER: its address on NET, empty when it is not on it.
-ip_on() { podman container inspect -f "{{with index .NetworkSettings.Networks \"$1\"}}{{.IPAddress}}{{end}}" "$2"; }
-
 @test "a jail reaches its own proxy and no other: each per-project proxy has a network of its own" {
   mkdir -p "$JAIL_PROFILES_DIR"
   echo 'allowlist = example.com' > "$JAIL_PROFILES_DIR/svc.conf"

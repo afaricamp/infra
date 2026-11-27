@@ -2,6 +2,15 @@
 # Stand-in for the Claude binary in the integration tests, so the jail image
 # can be built without downloading the real one. It runs its arguments as a
 # command: 'launch_claude.sh id -u' runs 'id -u' inside the jail.
+# claude-jailed puts the MCP servers first, as --mcp-config=<json>: the stub
+# keeps them in CLAUDE_STUB_MCP_CONFIG for the tests and runs the rest.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mcp-config=*) CLAUDE_STUB_MCP_CONFIG="${CLAUDE_STUB_MCP_CONFIG:+$CLAUDE_STUB_MCP_CONFIG }${1#--mcp-config=}"; shift ;;
+    *) break ;;
+  esac
+done
+[ -z "${CLAUDE_STUB_MCP_CONFIG:-}" ] || export CLAUDE_STUB_MCP_CONFIG
 if [ "${1:-}" = "--version" ]; then
   echo "0.0.0 (claude-jail test stub)"
   exit 0
