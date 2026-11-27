@@ -50,6 +50,10 @@
 #   STUB_PROJECT_PROXY_IP their address on the internal network (10.89.0.4)
 #   STUB_PROXIES_IN_USE   the ones a running jail uses ('ps -q --filter
 #                         label=dev-infra.proxy=<name>' answers for them)
+#   STUB_PROJECTS_IN_USE  project folders a running jail is on (label
+#                         dev-infra.project=<path>), newline-separated
+#   STUB_DEVCONTAINERS    project folders a running dev container is on
+#                         (label devcontainer.local_folder=<path>)
 #   STUB_CREATE_FAIL      set: 'create' fails
 #   STUB_PROJECT_NETS     what 'network ls --filter label=dev-infra.proxy-group=...'
 #                         lists: their internal networks
@@ -245,6 +249,12 @@ case "$1 ${2:-}" in
     case "$*" in
       *"label=dev-infra.proxy-group="*)
         for name in ${STUB_PROJECT_PROXIES:-}; do echo "$name"; done ;;
+      *"label=dev-infra.project="*)
+        all="$*"; name="${all##*label=dev-infra.project=}"
+        if printf '%s\n' "${STUB_PROJECTS_IN_USE:-}" | grep -qxF -- "$name"; then echo 1a2b3c4d5e6f; fi ;;
+      *"label=devcontainer.local_folder="*)
+        all="$*"; name="${all##*label=devcontainer.local_folder=}"
+        if printf '%s\n' "${STUB_DEVCONTAINERS:-}" | grep -qxF -- "$name"; then echo 6f5e4d3c2b1a; fi ;;
       *"label=dev-infra.proxy="*)
         all="$*"
         name="${all##*label=dev-infra.proxy=}"

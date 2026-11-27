@@ -93,6 +93,9 @@ if podman container exists "$JAIL_CACHE" 2>/dev/null; then
   fi
 fi
 
+# Save the project first, when its profile asks for it ('snapshot = on').
+[ "$JAIL_SNAPSHOT" = off ] || jail_snapshot_take
+
 # Report the host-run files Claude changed, when the container exits.
 jail_watch_start
 

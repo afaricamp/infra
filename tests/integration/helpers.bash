@@ -23,6 +23,8 @@ export JAIL_PERSONAL_SKILLS_DIR=""
 export JAIL_PROFILES_DIR="/nonexistent/jail-profiles"
 # Nor your secrets: the tests that need some make their own.
 export JAIL_SECRETS_DIR="/nonexistent/jail-secrets"
+# Nor your snapshots.
+export JAIL_SNAPSHOTS_DIR="/nonexistent/jail-snapshots"
 
 require_podman() {
   command -v podman >/dev/null || skip "podman not installed"
