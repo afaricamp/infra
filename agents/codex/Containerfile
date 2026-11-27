@@ -1,0 +1,41 @@
+# =============================================================================
+# Codex (https://github.com/openai/codex, Apache-2.0) in the jail: the same
+# hardening, project mount and egress proxy as Claude, its own image. Built
+# by 'make build-agent AGENT=codex'; run with 'agent-jail codex' (see
+# agents/README.md).
+#
+# @openai/codex and its native package for this machine come from
+# package-lock.json, checked against the checksums in it ('npm ci'), and no
+# install script runs. Node stays: Codex's own launcher finds the binary and
+# what it ships with it (rg, its sandbox). To move to a new version:
+# agents/README.md, "Updating an agent".
+# =============================================================================
+FROM docker.io/library/node:24-bookworm@sha256:49f7adaf9f1574bc45c20ea317139b39a59d7e758d0e93745e112fd85cb42623
+
+WORKDIR /opt/codex
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier \
+      --cache /tmp/npm-cache && rm -rf /tmp/npm-cache && \
+    node_modules/.bin/codex --version
+ENV PATH="/opt/codex/node_modules/.bin:${PATH}"
+
+# The image's 'node' user is UID 1000: the launcher maps you onto it.
+USER node
+WORKDIR /home/node
+RUN mkdir -p project tmp .codex
+WORKDIR /home/node/project
+
+# Codex's own sandbox (bubblewrap) cannot run in the jail, which is the
+# sandbox: commands run without it. Its update check, its analytics (to
+# ab.chatgpt.com), the model list it fetches for an API key (chatgpt.com;
+# without it, its built-in list) and its plugins (GitHub, chatgpt.com) are
+# off: then it only talks to api.openai.com. A later -c on the command line
+# wins over these.
+ENTRYPOINT ["codex", \
+  "-c", "sandbox_mode=\"danger-full-access\"", \
+  "-c", "check_for_update_on_startup=false", \
+  "-c", "analytics.enabled=false", \
+  "-c", "features.api_key_model_discovery=false", \
+  "-c", "features.plugins=false", \
+  "-c", "features.remote_plugin=false", \
+  "-c", "features.plugin_sharing=false"]

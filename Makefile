@@ -242,7 +242,8 @@ build-agent: ## Build another agent's jail image. Usage: make build-agent AGENT=
 	 podman build -t "$$img" "$(JAIL_AGENTS_DIR)/$$agent"
 
 # A private file for another agent's own API key ('NAME=value' lines), which
-# only that agent's jail gets (--env-file). An existing one is kept.
+# only that agent's jail gets (--env-file). It starts as agents/<AGENT>/
+# env.example, the variables that agent reads. An existing one is kept.
 agent-env: ## A private file for another agent's API key. Usage: make agent-env AGENT=<name>
 	@agent=$(call shquote,AGENT); \
 	 case "$$agent" in ''|*[!a-z0-9-]*|-*|*-) echo "ERROR: AGENT missing or not an agent name. Usage: make agent-env AGENT=<name>"; exit 1;; esac; \
@@ -251,8 +252,11 @@ agent-env: ## A private file for another agent's API key. Usage: make agent-env 
 	   echo "ERROR: $$dir is inside DEV_PROJECTS, where the jails can read it"; exit 1;; esac; \
 	 (umask 077 && mkdir -p "$$dir"); \
 	 if [ -e "$$file" ]; then chmod 600 "$$file"; echo "OK: $$file already exists, kept (mode 600)."; \
+	 elif [ -f "$(JAIL_AGENTS_DIR)/$$agent/env.example" ]; then \
+	   (umask 077 && cat "$(JAIL_AGENTS_DIR)/$$agent/env.example" > "$$file") && \
+	   echo "OK: $$file written, mode 600. Put the key in it; the next agent-jail $$agent reads it."; \
 	 else (umask 077 && printf '%s\n' "# The API key of $$agent: NAME=value lines, passed to its jail only." \
-	   "# Values are taken as they are: no quotes, no \$$ expansion." "# ANTHROPIC_API_KEY=" "# OPENAI_API_KEY=" > "$$file") && \
+	   "# Values are taken as they are: no quotes, no \$$ expansion." > "$$file") && \
 	   echo "OK: $$file written, mode 600. Put the key in it; the next agent-jail $$agent reads it."; fi
 
 # The dev container images pin their user to UID 1000 (no --build-arg with

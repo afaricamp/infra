@@ -114,6 +114,13 @@ for d in agents/*/; do
     fi
     check "agents/$n: pip installs exact versions from hashes, wheels only" [ "$pip_ok" = yes ]
   fi
+  if [ -f "$d/package.json" ]; then
+    npm_ok=no
+    if [ -f "$d/package-lock.json" ] && grep -qE 'npm ci .*--ignore-scripts' "$d/Containerfile"; then
+      npm_ok=yes
+    fi
+    check "agents/$n: npm ci from package-lock.json, with --ignore-scripts" [ "$npm_ok" = yes ]
+  fi
 done
 
 # Every MCP server definition in mcp/ can be started: a usable name (as

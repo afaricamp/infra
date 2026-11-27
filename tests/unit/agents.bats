@@ -227,3 +227,11 @@ define() {
     contains "$output" "jail aider --version"
   fi
 }
+
+@test "make agent-env: starts from the agent's env.example when it has one" {
+  printf '%s\n' '# the tool key' '# TOOL_API_KEY=' > "$JAIL_AGENTS_DIR/tool/env.example"
+  run make_repo agent-env AGENT=tool
+  [ "$status" -eq 0 ]
+  cmp -s "$JAIL_AGENTS_DIR/tool/env.example" "$JAIL_AGENT_ENV_DIR/tool.env"
+  [ "$(ls -l "$JAIL_AGENT_ENV_DIR/tool.env" | cut -c1-10)" = "-rw-------" ]
+}
