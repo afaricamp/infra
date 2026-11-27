@@ -65,7 +65,7 @@ BATS_IMAGE     := localhost/dev-infra-bats:latest
 TESTS          ?= tests/integration
 SHELLCHECK     := docker.io/koalaman/shellcheck:v0.10.0
 HADOLINT       := docker.io/hadolint/hadolint:v2.12.0
-SCRIPTS        := dev.sh claude-jail/common.sh claude-jail/launch_claude.sh \
+SCRIPTS        := dev.sh doctor.sh claude-jail/common.sh claude-jail/launch_claude.sh \
                   claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh \
                   claude-jail/egress-hardening/setup-egress.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
@@ -86,7 +86,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
         build build-claude build-go build-php build-react build-vue egress egress-dev \
-        aliases devcontainer ai-sessions personal-skills fix-volumes verify lint clean-images \
+        aliases devcontainer ai-sessions personal-skills fix-volumes verify doctor lint clean-images \
         test test-static test-unit test-integration test-all
 
 help: ## Show this help
@@ -339,6 +339,13 @@ endif
 	     echo "  DNS on $(JAIL_NET_INTERNAL): external names do not resolve (OK)"; \
 	   fi; \
 	 fi
+
+# Read-only, like verify, but it checks more and prints the command that
+# fixes each problem. Exit status 1 when something will not work.
+doctor: ## Check the whole setup and print the fix for every problem (changes nothing)
+	@DEV_PROJECTS="$(DEV_PROJECTS)" JAIL_IMAGE="$(JAIL_IMAGE)" JAIL_VOLUME_PREFIX="$(JAIL_VOLUME_PREFIX)" \
+	 JAIL_PROXY="$(JAIL_PROXY)" JAIL_NET_INTERNAL="$(JAIL_NET_INTERNAL)" CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" \
+	 "$(CURDIR)/doctor.sh"
 
 lint: ## Run shellcheck and hadolint (in containers; nothing installed on the host)
 	$(ENGINE) run --rm --security-opt label=disable -v "$(CURDIR)":/mnt:ro -w /mnt \
