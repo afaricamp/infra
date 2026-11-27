@@ -13,6 +13,10 @@ setup_file() {
   [ "${JAIL_TEST_OFFLINE:-0}" != 1 ] || skip "JAIL_TEST_OFFLINE=1"
   build_jail_image
   "$REPO/claude-jail/egress-hardening/setup-egress.sh" >/dev/null
+  # The probe's own secret ('make secrets MCP=probe' would write this file).
+  export JAIL_SECRETS_DIR="$BATS_FILE_TMPDIR/secrets"
+  mkdir -p "$JAIL_SECRETS_DIR/mcp"
+  (umask 077 && echo 'PROBE_KEY=s3cret-for-the-server' > "$JAIL_SECRETS_DIR/mcp/probe.env")
   JAIL_MCP_DIR="$REPO/tests/integration/fixtures/mcp" JAIL_MCP_SETTLE=1 "$MCP" up probe >/dev/null
 }
 
@@ -124,6 +128,15 @@ except Exception as e:
   echo "$output"
   contains "$output" "example.com:443"
   contains "$output" "github.com:443"
+}
+
+@test "the server gets its own secrets; a jail that lists it does not" {
+  run podman exec "$SERVER" printenv PROBE_KEY
+  [ "$status" -eq 0 ]
+  [ "$output" = s3cret-for-the-server ]
+  uses 'mcp = probe'
+  jail_jailed printenv PROBE_KEY
+  [ "$status" -ne 0 ]
 }
 
 @test "the context7 server of mcp/ answers MCP inside the jail: its tools, and a lookup through its proxy" {

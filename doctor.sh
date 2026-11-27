@@ -10,7 +10,7 @@
 # Exit status 1 when there is at least one FAIL, 0 otherwise.
 # Run through 'make doctor', which passes the same names the Makefile uses
 # (DEV_PROJECTS, JAIL_IMAGE, JAIL_VOLUME_PREFIX, JAIL_PROXY, JAIL_NET_*,
-# JAIL_CACHE).
+# JAIL_CACHE, JAIL_SECRETS_DIR).
 # DOCTOR_OS overrides 'uname -s' (for the tests).
 # =============================================================================
 set -uo pipefail
@@ -22,6 +22,7 @@ JAIL_IMAGE="${JAIL_IMAGE:-localhost/claude-jail:latest}"
 JAIL_PROXY="${JAIL_PROXY:-claude-proxy}"
 JAIL_NET_INTERNAL="${JAIL_NET_INTERNAL:-jail-internal}"
 JAIL_CACHE="${JAIL_CACHE:-claude-cache}"
+JAIL_SECRETS_DIR="${JAIL_SECRETS_DIR:-$HOME/.config/dev-infra/secrets}"
 export DEV_PROJECTS JAIL_IMAGE JAIL_PROXY JAIL_NET_INTERNAL JAIL_CACHE
 
 fails=0
@@ -188,6 +189,37 @@ else
     warn "dependency cache $JAIL_CACHE is stopped (after a reboot): go and npm downloads go to the proxy" \
       "podman start $JAIL_CACHE"
   fi
+fi
+
+# --- Secrets (optional) ----------------------------------------------------------
+# 'make secrets': env files for dev containers and MCP servers, never the jail.
+# Their mode and owner from 'ls -ln' (stat takes other flags on GNU and BSD).
+section "Secrets (dev containers, MCP servers)"
+if [ ! -d "$JAIL_SECRETS_DIR" ]; then
+  ok "none yet (make secrets PROJECT=<path> or MCP=<name> when you need them)"
+else
+  secrets_real="$(readlink -f "$JAIL_SECRETS_DIR")"
+  case "$secrets_real/" in
+    "$(readlink -f "$DEV_PROJECTS" 2>/dev/null)"/*)
+      fail "$JAIL_SECRETS_DIR is inside DEV_PROJECTS, where the Claude jail can read it" \
+        "move it out, e.g. to ~/.config/dev-infra/secrets (JAIL_SECRETS_DIR)" ;;
+  esac
+  # shellcheck disable=SC2012
+  read -r perms _ owner _ < <(ls -lnd -- "$JAIL_SECRETS_DIR")
+  if [ "${perms:4:6}" != "------" ]; then
+    warn "$JAIL_SECRETS_DIR can be opened by others" "chmod 700 '$JAIL_SECRETS_DIR'"
+  fi
+  count=0 open=0
+  while IFS= read -r f; do
+    count=$((count + 1))
+    # shellcheck disable=SC2012
+    read -r perms _ owner _ < <(ls -ln -- "$f")
+    if [ "$owner" != "$(id -u)" ] || [ "${perms:4:6}" != "------" ]; then
+      open=$((open + 1))
+      fail "$f is not private: others can read it, or it is not yours" "chmod 600 '$f' (as its owner)"
+    fi
+  done < <(find "$JAIL_SECRETS_DIR" -type f -name '*.env' 2>/dev/null)
+  [ "$open" -gt 0 ] || ok "$count secrets file(s) in $JAIL_SECRETS_DIR, all private"
 fi
 
 printf '\n%s problem(s), %s warning(s).\n' "$fails" "$warns"

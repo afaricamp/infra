@@ -10,6 +10,8 @@ export JAIL_PERSONAL_SKILLS_DIR=""
 # Nor your profiles in ~/.config/dev-infra/projects: setup_projects gives each
 # test an empty directory of its own.
 export JAIL_PROFILES_DIR="/nonexistent/jail-profiles"
+# Nor your secrets in ~/.config/dev-infra/secrets.
+export JAIL_SECRETS_DIR="/nonexistent/jail-secrets"
 
 # A projects directory with one project, as the launchers expect.
 setup_projects() {
@@ -17,6 +19,7 @@ setup_projects() {
   mkdir -p "$DEV_PROJECTS/svc"
   PROJ="$(cd "$DEV_PROJECTS/svc" && pwd -P)"
   export JAIL_PROFILES_DIR="$BATS_TEST_TMPDIR/profiles"
+  export JAIL_SECRETS_DIR="$BATS_TEST_TMPDIR/secrets"
 }
 
 # Put the fake podman first on PATH.

@@ -191,3 +191,38 @@ $REPO"
   [ "$status" -ne 0 ]
   contains "$output" "image localhost/claude-jail:custom is missing"
 }
+
+@test "doctor: secrets files others can read are a problem, a secrets folder others can open a warning; values never shown" {
+  install_aliases
+  doctor
+  contains "$output" "none yet (make secrets PROJECT=<path> or MCP=<name>"
+
+  export JAIL_SECRETS_DIR="$BATS_TEST_TMPDIR/secrets"
+  mkdir -p "$JAIL_SECRETS_DIR/projects" "$JAIL_SECRETS_DIR/mcp"
+  chmod 700 "$JAIL_SECRETS_DIR"
+  (umask 077 && echo 'A=first-value' > "$JAIL_SECRETS_DIR/projects/a.env" && echo 'B=second-value' > "$JAIL_SECRETS_DIR/mcp/b.env")
+  doctor
+  [ "$status" -eq 0 ]
+  contains "$output" "2 secrets file(s) in $JAIL_SECRETS_DIR, all private"
+
+  chmod 644 "$JAIL_SECRETS_DIR/mcp/b.env"
+  chmod 755 "$JAIL_SECRETS_DIR"
+  doctor
+  echo "$output"
+  [ "$status" -eq 1 ]
+  contains "$output" "FAIL  $JAIL_SECRETS_DIR/mcp/b.env is not private"
+  has_fix "$output" "chmod 600 '$JAIL_SECRETS_DIR/mcp/b.env'"
+  contains "$output" "WARN  $JAIL_SECRETS_DIR can be opened by others"
+  has_fix "$output" "chmod 700 '$JAIL_SECRETS_DIR'"
+  not grep -q 'first-value\|second-value' <<<"$output"
+}
+
+@test "doctor: a secrets folder inside DEV_PROJECTS is a problem: the jail can read it there" {
+  install_aliases
+  export JAIL_SECRETS_DIR="$DEV_PROJECTS/.secrets"
+  mkdir -p "$JAIL_SECRETS_DIR"
+  chmod 700 "$JAIL_SECRETS_DIR"
+  doctor
+  [ "$status" -eq 1 ]
+  contains "$output" "FAIL  $JAIL_SECRETS_DIR is inside DEV_PROJECTS, where the Claude jail can read it"
+}

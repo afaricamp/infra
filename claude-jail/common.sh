@@ -459,11 +459,14 @@ jail_profile_path() {
   printf '%s/%s.conf\n' "$JAIL_PROFILES_DIR" "${here#"$projects"/}"
 }
 
-# jail_profile_check FILE: refuse a profile the jail could write: one that is,
-# or leads to, a path inside $DEV_PROJECTS. FILE need not exist yet; its
-# nearest existing parent is resolved.
-jail_profile_check() {
+# jail_outside_projects FILE WHAT HINT: stop when FILE is, or leads to, a path
+# inside $DEV_PROJECTS, where the jail can write (and read). FILE need not
+# exist yet; its nearest existing parent is resolved. WHAT names it in the
+# message, HINT says where it belongs. Without DEV_PROJECTS (a script run by
+# hand, not through make) there is nothing to compare with.
+jail_outside_projects() {
   local path="$1" rest="" real projects
+  [ -n "${DEV_PROJECTS:-}" ] || return 0
   while [ ! -e "$path" ] && [ ! -L "$path" ]; do
     rest="/$(basename "$path")$rest"
     path="$(dirname "$path")"
@@ -471,9 +474,14 @@ jail_profile_check() {
   real="$(readlink -f "$path")$rest"
   projects="$(readlink -f "$DEV_PROJECTS")"
   case "$real/" in
-    "$projects"/*) jail_die "the profile $1 is inside DEV_PROJECTS ($real), where the jail can write." \
-      "Keep profiles in ~/.config/dev-infra/projects, or point JAIL_PROFILES_DIR outside $DEV_PROJECTS." ;;
+    "$projects"/*) jail_die "$2 $1 is inside DEV_PROJECTS ($real), where the jail can write." "$3" ;;
   esac
+}
+
+# jail_profile_check FILE: refuse a profile the jail could write.
+jail_profile_check() {
+  jail_outside_projects "$1" "the profile" \
+    "Keep profiles in ~/.config/dev-infra/projects, or point JAIL_PROFILES_DIR outside $DEV_PROJECTS."
 }
 
 # jail_trim VAR TEXT: TEXT without leading and trailing whitespace, into VAR.
@@ -872,6 +880,31 @@ jail_mcp_flags() {
   # next argument (a prompt, say) as a config. The quotes are JSON, for claude.
   # shellcheck disable=SC2034,SC2089  # used by launch_claude_jailed.sh
   JAIL_MCP_CONFIG="--mcp-config={\"mcpServers\":{$json}}"
+}
+
+# --- Secrets (dev containers and MCP servers, never the jail) ---
+# Tokens and keys that a project's dev container or an MCP server needs live
+# on the host, outside every project, in env files ('NAME=value' lines):
+#   $JAIL_SECRETS_DIR/projects/<project>.env  the dev container of a project
+#                                             (<project> as for its profile)
+#   $JAIL_SECRETS_DIR/mcp/<name>.env          an MCP server (mcp-servers.sh)
+# 'make secrets PROJECT=<path>' or 'make secrets MCP=<name>' (secrets.sh)
+# writes one, mode 600 in a folder only you can open. podman reads it on this
+# machine when the container starts (--env-file; on macOS the podman client
+# reads it, and the podman machine never sees the folder) and passes the
+# values as environment variables. The Claude jail never gets them: neither
+# launcher passes an env file (tests/static/policy.sh checks it), and the
+# folder is never mounted. It may not be inside $DEV_PROJECTS.
+JAIL_SECRETS_DIR="${JAIL_SECRETS_DIR:-$HOME/.config/dev-infra/secrets}"
+
+# jail_private_file FILE: FILE is yours, and its mode gives nobody else any
+# access (no group or other bits). 'ls -ln' because stat takes other flags
+# on GNU and BSD.
+jail_private_file() {
+  local perms owner
+  # shellcheck disable=SC2012
+  read -r perms _ owner _ < <(ls -ln -- "$1" 2>/dev/null) || return 1
+  [ "$owner" = "$(id -u)" ] && [ "${perms:4:6}" = "------" ]
 }
 
 # Each launcher runs jail_guard, jail_settings, jail_check_volumes and

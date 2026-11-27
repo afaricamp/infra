@@ -21,6 +21,8 @@ TEST_VOLUMES=(claudetest-home claudetest-gopath claudetest-gocache)
 export JAIL_PERSONAL_SKILLS_DIR=""
 # Nor your project profiles: setup_project gives each test its own directory.
 export JAIL_PROFILES_DIR="/nonexistent/jail-profiles"
+# Nor your secrets: the tests that need some make their own.
+export JAIL_SECRETS_DIR="/nonexistent/jail-secrets"
 
 require_podman() {
   command -v podman >/dev/null || skip "podman not installed"

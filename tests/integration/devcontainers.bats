@@ -24,11 +24,12 @@ teardown_file() {
   remove_test_volumes
 }
 
-# devcontainer_args TYPE: build the image and fill DC_ARGS with what Gateway
-# would pass from devcontainer.json (runArgs, containerEnv, workspaceMount,
-# workspaceFolder), followed by the image.
+# devcontainer_args TYPE [JSON]: build the image and fill DC_ARGS with what
+# Gateway would pass from devcontainer.json (runArgs, containerEnv,
+# workspaceMount, workspaceFolder), followed by the image. JSON defaults to
+# the repo's own; ${localEnv:HOME} in runArgs becomes $HOME, as Gateway does.
 devcontainer_args() {
-  local type="$1" json="$REPO/devcontainers/$1/devcontainer.json"
+  local type="$1" json="${2:-$REPO/devcontainers/$1/devcontainer.json}"
   case " ${DC_TYPES_UNDER_TEST:-go php react vue} " in *" $type "*) ;; *) skip "not in DC_TYPES_UNDER_TEST" ;; esac
 
   local image="localhost/devcontainer-$type:test"
@@ -36,7 +37,7 @@ devcontainer_args() {
 
   local jsonc="$REPO/tests/lib/jsonc.py" line mount
   DC_ARGS=()
-  while IFS= read -r line; do DC_ARGS+=("$line"); done < <(python3 "$jsonc" --get runArgs "$json")
+  while IFS= read -r line; do DC_ARGS+=("${line//'${localEnv:HOME}'/$HOME}"); done < <(python3 "$jsonc" --get runArgs "$json")
   while IFS= read -r line; do DC_ARGS+=(-e "$line"); done < <(python3 "$jsonc" --get containerEnv "$json")
   mount="$(python3 "$jsonc" --get workspaceMount "$json")"
   DC_ARGS+=(--mount "${mount//'${localWorkspaceFolder}'/$PROJ}")
@@ -114,4 +115,29 @@ check_shared_with_jail() {
 
 @test "devcontainer vue and the jail write to the same project at the same time" {
   check_shared_with_jail vue
+}
+
+@test "a project's secrets reach its dev container, and never the Claude jail" {
+  # Outside DEV_PROJECTS, as make secrets requires; podman reads the file on
+  # this machine, so on macOS the podman machine need not see it.
+  export JAIL_SECRETS_DIR="$(dirname "$DEV_PROJECTS")/secrets"
+  run make --no-print-directory -s -C "$REPO" devcontainer PROJECT="$PROJ" TYPE=go DEV_PROJECTS="$DEV_PROJECTS"
+  [ "$status" -eq 0 ]
+  run make --no-print-directory -s -C "$REPO" secrets PROJECT="$PROJ" DEV_PROJECTS="$DEV_PROJECTS"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  echo 'PROBE_SECRET=s3cret-for-the-devcontainer' >> "$JAIL_SECRETS_DIR/projects/svc.env"
+
+  devcontainer_args go "$PROJ/.devcontainer/devcontainer.json"
+  run podman run --rm "${DC_ARGS[@]}" printenv PROBE_SECRET
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [ "$output" = s3cret-for-the-devcontainer ]
+
+  jail printenv PROBE_SECRET
+  [ "$status" -ne 0 ]
+  # Nowhere the jail can read: its project and its volumes.
+  jail sh -c 'grep -rl s3cret-for-the-devcontainer /home/claudeuser 2>/dev/null; true'
+  [ "$status" -eq 0 ]
+  not grep -q '/home/claudeuser' <<<"$output"
 }
