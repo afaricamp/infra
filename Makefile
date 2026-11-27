@@ -20,6 +20,7 @@ override FORCE   := $(value FORCE)
 override SRC     := $(value SRC)
 override SINCE   := $(value SINCE)
 override FOLLOW  := $(value FOLLOW)
+override NAME    := $(value NAME)
 
 CLAUDE_JAIL   := $(CURDIR)/claude-jail
 DEVCONTAINERS := $(CURDIR)/devcontainers
@@ -42,10 +43,15 @@ JAIL_CACHE         ?= claude-cache
 JAIL_CACHE_IMAGE   ?= claude-dep-cache
 JAIL_CACHE_VOLUME  := $(JAIL_VOLUME_PREFIX)-depcache
 JAIL_PERSONAL_SKILLS_DIR ?= $(CURDIR)/personal-skills
+JAIL_MCP_PREFIX    ?= claude-mcp
+JAIL_MCP_DIR       ?= $(CURDIR)/mcp
 
 # Where your projects live: the only directories the Claude jail may be
 # launched from. Baked into the installed dev.sh by 'make aliases'.
 DEV_PROJECTS  ?= $(HOME)/dev/projects
+
+# The MCP server definitions in mcp/ (one folder each), for clean-images.
+MCP_NAMES     := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(CURDIR)/mcp/*/mcp.conf)))))
 
 # Claude Code version to download: latest (default) or e.g. VERSION=x.y.z
 VERSION       ?= latest
@@ -58,7 +64,7 @@ DC_TYPES      := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(DEVCONTAINER
 # '$(...)' inside them (even run '$(shell ...)') when it references or exports
 # them, so they are never exported and only read raw, through $(value), and
 # single-quoted for the shell: a path is just a path.
-unexport PROJECT TYPE FORCE SRC
+unexport PROJECT TYPE FORCE SRC NAME
 shquote = '$(subst ','\'',$(value $(1)))'
 
 # Tests and linters. Linters and the unit tests run in containers so nothing
@@ -76,14 +82,15 @@ SCRIPTS        := dev.sh doctor.sh bump-images.sh claude-jail/common.sh claude-j
                   claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh claude-jail/profile.sh \
                   claude-jail/egress-hardening/setup-egress.sh claude-jail/egress-hardening/egress-log.sh \
                   claude-jail/egress-hardening/setup-caches.sh claude-jail/egress-hardening/cache-entrypoint.sh \
-                  claude-jail/egress-hardening/prune-proxies.sh \
+                  claude-jail/egress-hardening/prune-proxies.sh claude-jail/egress-hardening/mcp-servers.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
                   tests/static/policy.sh tests/ci/setup-rootless-podman.sh \
                   tests/unit/stubs/podman \
                   tests/integration/fixtures/claude-stub
 CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy \
                   claude-jail/egress-hardening/Containerfile.cache \
-                  $(wildcard devcontainers/*/Containerfile)
+                  $(wildcard devcontainers/*/Containerfile) $(wildcard mcp/*/Containerfile) \
+                  $(wildcard tests/integration/fixtures/mcp/*/Containerfile)
 
 # Several targets are order-dependent ('all' downloads before it builds,
 # 'update-claude' re-downloads before rebuilding). Make is free to run
@@ -96,7 +103,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
         build build-claude build-go build-php build-react build-vue egress egress-dev egress-log \
-        caches caches-down egress-prune \
+        caches caches-down egress-prune mcp-up mcp-down mcp-list \
         aliases devcontainer ai-sessions profile personal-skills fix-volumes verify doctor bump-images lint clean-images \
         test test-static test-unit test-integration test-all
 
@@ -224,6 +231,22 @@ egress-log: ## What the egress proxy allowed and denied, per domain (SINCE=1h, F
 # launch. JAIL_CACHE: the cache leaves those networks before they go.
 egress-prune: ## Remove the per-project proxies that no running claude-jailed uses
 	@JAIL_PROXY="$(JAIL_PROXY)" JAIL_CACHE="$(JAIL_CACHE)" "$(CLAUDE_JAIL)/egress-hardening/prune-proxies.sh"
+
+# MCP servers for claude-jailed, one container each, defined in mcp/<name>/
+# (see mcp/README.md). NAME goes through shquote: it is checked by the script
+# and never run.
+MCP_ENV = JAIL_PROXY="$(JAIL_PROXY)" JAIL_PROXY_IMAGE="$(JAIL_PROXY_IMAGE)" \
+          JAIL_NET_INTERNAL="$(JAIL_NET_INTERNAL)" JAIL_NET_EGRESS="$(JAIL_NET_EGRESS)" \
+          JAIL_MCP_PREFIX="$(JAIL_MCP_PREFIX)" JAIL_MCP_DIR="$(JAIL_MCP_DIR)"
+
+mcp-up: ## Build and (re)start an MCP server for claude-jailed. Usage: make mcp-up NAME=<name> (see mcp/)
+	@name=$(call shquote,NAME); $(MCP_ENV) "$(CLAUDE_JAIL)/egress-hardening/mcp-servers.sh" up "$$name"
+
+mcp-down: ## Remove an MCP server, its proxy and its networks. Usage: make mcp-down NAME=<name>
+	@name=$(call shquote,NAME); $(MCP_ENV) "$(CLAUDE_JAIL)/egress-hardening/mcp-servers.sh" down "$$name"
+
+mcp-list: ## List the MCP servers in mcp/ and whether they run
+	@$(MCP_ENV) "$(CLAUDE_JAIL)/egress-hardening/mcp-servers.sh" list
 
 # Go modules and npm packages for claude-jailed, through a cache that sits on
 # the proxy's two networks: the strict allowlist is then enough to build. The
@@ -384,6 +407,8 @@ endif
 	 else \
 	   echo "  dependency cache $(JAIL_CACHE): does not exist (optional: make caches)"; \
 	 fi
+	@running="$$(podman ps --filter label=dev-infra.mcp.url --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')"; \
+	 echo "  MCP servers running: $${running:-none} (optional: make mcp-list)"
 	@# A process on jail-internal should not be able to resolve outside names:
 	@# if it can, DNS is an exfiltration channel the proxy never sees.
 	@if podman network exists $(JAIL_NET_INTERNAL) 2>/dev/null && podman image exists $(JAIL_IMAGE) 2>/dev/null; then \
@@ -441,4 +466,5 @@ test-integration: ## Level 3: real rootless podman (TESTS=<files> to pick, needs
 clean-images: ## Remove the built images (leaves volumes and data alone)
 	-podman rmi $(JAIL_IMAGE) $(JAIL_PROXY_IMAGE) $(JAIL_CACHE_IMAGE) \
 	  localhost/devcontainer-go:latest localhost/devcontainer-php:latest \
-	  localhost/devcontainer-react:latest localhost/devcontainer-vue:latest
+	  localhost/devcontainer-react:latest localhost/devcontainer-vue:latest \
+	  $(foreach n,$(MCP_NAMES),localhost/$(JAIL_MCP_PREFIX)-$(n):latest)

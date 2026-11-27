@@ -1,0 +1,9 @@
+{
+  "name": "claude-mcp-context7",
+  "private": true,
+  "description": "Context7 MCP server for claude-jailed; see mcp/README.md",
+  "license": "MIT",
+  "dependencies": {
+    "@upstash/context7-mcp": "4.9.0"
+  }
+}

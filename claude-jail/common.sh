@@ -441,12 +441,14 @@ jail_watch_report() {
 #   watch_paths  more paths for the exit report     added to the defaults
 #   allowlist    more hosts for claude-jailed       as JAIL_ALLOWLIST (see
 #                                                   "Per-project allowlist")
+#   mcp          MCP servers for claude-jailed      as JAIL_MCP_SERVERS (see
+#                                                   "MCP servers")
 # The two lists only add: a profile can protect more, never less, and a path
 # added to the defaults later also covers the projects that have a profile.
 # The environment wins over the profile, and JAIL_RO_PATHS and
 # JAIL_WATCH_PATHS still replace their whole list.
 JAIL_PROFILES_DIR="${JAIL_PROFILES_DIR:-$HOME/.config/dev-infra/projects}"
-JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths allowlist"
+JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths allowlist mcp"
 
 # jail_profile_path: the profile file of the current directory, a project
 # under $DEV_PROJECTS (jail_guard checks that first).
@@ -482,19 +484,16 @@ jail_trim() {
   printf -v "$1" '%s' "$s"
 }
 
-# jail_profile_load: read the current project's profile, if it has one, into
-# JAIL_PROFILE_<key>. JAIL_PROFILE is its path and JAIL_PROFILE_SET the keys
-# it sets, both empty without a profile.
-jail_profile_load() {
-  local file line key value n=0 k
-  for k in $JAIL_PROFILE_KEYS; do unset "JAIL_PROFILE_$k"; done
-  JAIL_PROFILE="" JAIL_PROFILE_SET=""
-  file="$(jail_profile_path)"
-  [ -e "$file" ] || return 0
-  jail_profile_check "$file"
-  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
-    jail_die "the profile $file is not a file you can read."
-  fi
+# jail_conf_read FILE PREFIX KEYS: parse FILE into PREFIX<key> for each of the
+# space-separated KEYS it sets; JAIL_CONF_SET is the list of keys it set.
+# 'key = value' lines and '#' comment lines, read literally: no quotes, $ or
+# backslashes, so nothing in it can run. An unknown key, a key set twice or a
+# line without '=' stops here, so a typo cannot leave a default in place
+# without a word. Used for project profiles and MCP server definitions.
+jail_conf_read() {
+  local file="$1" prefix="$2" keys="$3" line key value n=0 k
+  for k in $keys; do unset "$prefix$k"; done
+  JAIL_CONF_SET=""
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     jail_trim line "$line"
@@ -505,11 +504,11 @@ jail_profile_load() {
     esac
     jail_trim key "${line%%=*}"
     jail_trim value "${line#*=}"
-    case " $JAIL_PROFILE_KEYS " in
+    case " $keys " in
       *" $key "*) ;;
-      *) jail_die "$file, line $n: unknown key '$key'." "Known keys: $JAIL_PROFILE_KEYS" ;;
+      *) jail_die "$file, line $n: unknown key '$key'." "Known keys: $keys" ;;
     esac
-    case " $JAIL_PROFILE_SET " in
+    case " $JAIL_CONF_SET " in
       *" $key "*) jail_die "$file, line $n: '$key' is set twice." ;;
     esac
     case "$value" in
@@ -517,9 +516,26 @@ jail_profile_load() {
         jail_die "$file, line $n: values are read literally and never run:" \
           "no quotes, \$ or backslashes (got: $value)." ;;
     esac
-    printf -v "JAIL_PROFILE_$key" '%s' "$value"
-    JAIL_PROFILE_SET="${JAIL_PROFILE_SET:+$JAIL_PROFILE_SET }$key"
+    printf -v "$prefix$key" '%s' "$value"
+    JAIL_CONF_SET="${JAIL_CONF_SET:+$JAIL_CONF_SET }$key"
   done < "$file"
+}
+
+# jail_profile_load: read the current project's profile, if it has one, into
+# JAIL_PROFILE_<key>. JAIL_PROFILE is its path and JAIL_PROFILE_SET the keys
+# it sets, both empty without a profile.
+jail_profile_load() {
+  local file k
+  for k in $JAIL_PROFILE_KEYS; do unset "JAIL_PROFILE_$k"; done
+  JAIL_PROFILE="" JAIL_PROFILE_SET=""
+  file="$(jail_profile_path)"
+  [ -e "$file" ] || return 0
+  jail_profile_check "$file"
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    jail_die "the profile $file is not a file you can read."
+  fi
+  jail_conf_read "$file" JAIL_PROFILE_ "$JAIL_PROFILE_KEYS"
+  JAIL_PROFILE_SET="$JAIL_CONF_SET"
   JAIL_PROFILE="$file"
 }
 
@@ -562,7 +578,9 @@ jail_settings() {
   [ -n "${JAIL_WATCH_PATHS+set}" ] ||
     JAIL_WATCH_PATHS="$JAIL_DEFAULT_WATCH_PATHS${JAIL_PROFILE_watch_paths:+ $JAIL_PROFILE_watch_paths}"
   jail_pick JAIL_ALLOWLIST allowlist ""
-  jail_allowlist_build
+  jail_allowlist_build "$JAIL_EGRESS_DIR/allowlist"
+  jail_pick JAIL_MCP_SERVERS mcp ""
+  jail_mcp_list_check
   JAIL_FLAGS+=(--pids-limit "$JAIL_PIDS" --memory "$JAIL_MEMORY" --memory-swap "$JAIL_MEMORY")
   if [ -n "$JAIL_PROFILE" ]; then
     local set="${JAIL_PROFILE_SET// /, }"
@@ -629,16 +647,18 @@ jail_ip_on() {
     "$2" 2>/dev/null || true
 }
 
-# jail_allowlist_build: JAIL_ALLOWLIST checked and turned into a tinyproxy
-# filter, sorted: JAIL_ALLOWLIST_FILTER (empty without an allowlist) and
-# JAIL_ALLOWLIST_HASH. Stops the launch on an entry that is not a domain or
-# @dev. Run by jail_settings, so both launchers refuse a bad one.
+# jail_allowlist_build BASE: JAIL_ALLOWLIST checked and turned into a
+# tinyproxy filter, sorted: the patterns of the allowlist file BASE (none when
+# BASE is empty) plus the entries. Sets JAIL_ALLOWLIST_FILTER (empty without
+# an allowlist) and JAIL_ALLOWLIST_HASH. Stops on an entry that is not a
+# domain or @dev. Run by jail_settings with the strict allowlist, so both
+# launchers refuse a bad one, and by mcp-servers.sh with no BASE.
 jail_allowlist_build() {
-  local entries entry domain lines label='[a-z0-9]([a-z0-9-]*[a-z0-9])?'
+  local entries entry domain lines="" label='[a-z0-9]([a-z0-9-]*[a-z0-9])?'
   local pattern="^($label\\.)+$label\$"
   JAIL_ALLOWLIST_FILTER="" JAIL_ALLOWLIST_HASH=""
   [ -n "$JAIL_ALLOWLIST" ] || return 0
-  lines="$(jail_filter_lines "$JAIL_EGRESS_DIR/allowlist")"
+  [ -z "$1" ] || lines="$(jail_filter_lines "$1")"
   # read -a, not 'for in $JAIL_ALLOWLIST': no glob expansion of a '*'.
   read -r -a entries <<<"$JAIL_ALLOWLIST"
   [ "${#entries[@]}" -gt 0 ] || return 0
@@ -658,8 +678,51 @@ $(jail_filter_lines "$JAIL_EGRESS_DIR/allowlist-dev")" ;;
 (^|\\.)$(printf '%s' "$domain" | sed 's/\./\\./g')\$" ;;
     esac
   done
-  JAIL_ALLOWLIST_FILTER="$(printf '%s\n' "$lines" | sort -u)"
+  JAIL_ALLOWLIST_FILTER="$(printf '%s\n' "$lines" | sed '/^$/d' | sort -u)"
   JAIL_ALLOWLIST_HASH="$(printf '%s\n' "$JAIL_ALLOWLIST_FILTER" | jail_sha256 | cut -c1-12)"
+}
+
+# jail_internal_network NET LABEL: create NET with LABEL unless it exists:
+# no route out and no DNS, like $JAIL_NET_INTERNAL (see setup-egress.sh).
+# Another launch may be creating it at the same moment.
+jail_internal_network() {
+  podman network exists "$1" 2>/dev/null && return 0
+  podman network create --internal --disable-dns --label "$2" "$1" >/dev/null ||
+    podman network exists "$1" 2>/dev/null ||
+    jail_die "could not create the network $1 (see the podman error above)."
+}
+
+# jail_proxy_create NAME NET LABEL: create the proxy NAME, with LABEL, from the
+# image 'make egress' built and JAIL_ALLOWLIST_FILTER as its filter, on the
+# egress network and on NET (which must exist), and start it. Returns 1 when
+# 'podman create' fails, leaving nothing behind; stops on a later failure,
+# after removing NAME.
+jail_proxy_create() {
+  local name="$1" net="$2" label="$3" filter status=0
+  filter="$(mktemp "${TMPDIR:-/tmp}/claude-allowlist.XXXXXX")" ||
+    jail_die "could not write a temporary file for the proxy's filter."
+  {
+    printf '# Made from the allowlist: %s\n' "$JAIL_ALLOWLIST"
+    printf '%s\n' "$JAIL_ALLOWLIST_FILTER"
+  } > "$filter"
+  # podman cp keeps the mode, and tinyproxy runs as UID 1000, not root.
+  chmod 644 "$filter"
+  # Egress network first, so its resolv.conf points at that network's DNS
+  # (as in setup-egress.sh); the filter goes in before tinyproxy starts.
+  if podman create --name "$name" "${JAIL_PROXY_RUN_FLAGS[@]}" --label "$label" \
+       --network "$JAIL_NET_EGRESS" "$JAIL_PROXY_IMAGE" >/dev/null; then
+    if ! podman cp "$filter" "$name:/etc/tinyproxy/allowlist" ||
+       ! podman start "$name" >/dev/null ||
+       ! podman network connect "$net" "$name"; then
+      rm -f -- "$filter"
+      podman rm -f "$name" >/dev/null 2>&1 || true
+      jail_die "could not set up the proxy $name (see the podman error above)."
+    fi
+  else
+    status=1
+  fi
+  rm -f -- "$filter"
+  return "$status"
 }
 
 # jail_project_proxy: make sure the proxy of this launch's allowlist exists
@@ -667,7 +730,7 @@ $(jail_filter_lines "$JAIL_EGRESS_DIR/allowlist-dev")" ;;
 # JAIL_PROXY_NET at that network. claude-jailed calls it when
 # JAIL_ALLOWLIST_FILTER is set.
 jail_project_proxy() {
-  local name="$JAIL_PROXY-$JAIL_ALLOWLIST_HASH" net="$JAIL_NET_INTERNAL-$JAIL_ALLOWLIST_HASH" filter
+  local name="$JAIL_PROXY-$JAIL_ALLOWLIST_HASH" net="$JAIL_NET_INTERNAL-$JAIL_ALLOWLIST_HASH"
   if ! podman container exists "$name" 2>/dev/null; then
     if ! podman image exists "$JAIL_PROXY_IMAGE" 2>/dev/null ||
        ! podman network exists "$JAIL_NET_EGRESS" 2>/dev/null; then
@@ -675,39 +738,11 @@ jail_project_proxy() {
         "Run 'make egress' once, then launch again."
     fi
     echo ">> Starting $name, the proxy of this project's allowlist (first launch with it)." >&2
-    # No route out and no DNS, like $JAIL_NET_INTERNAL (see setup-egress.sh).
-    # Another launch may be creating it at the same moment.
-    if ! podman network exists "$net" 2>/dev/null &&
-       ! podman network create --internal --disable-dns \
-           --label "dev-infra.proxy-group=$JAIL_PROXY" "$net" >/dev/null &&
-       ! podman network exists "$net" 2>/dev/null; then
-      jail_die "could not create the network $net (see the podman error above)."
-    fi
-    filter="$(mktemp "${TMPDIR:-/tmp}/claude-allowlist.XXXXXX")"
-    {
-      printf '# Made by claude-jailed from: %s\n' "$JAIL_ALLOWLIST"
-      printf '%s\n' "$JAIL_ALLOWLIST_FILTER"
-    } > "$filter"
-    # podman cp keeps the mode, and tinyproxy runs as UID 1000, not root.
-    chmod 644 "$filter"
-    # Egress network first, so its resolv.conf points at that network's DNS
-    # (as in setup-egress.sh); the filter goes in before tinyproxy starts.
-    if podman create --name "$name" "${JAIL_PROXY_RUN_FLAGS[@]}" \
-         --label "dev-infra.proxy-group=$JAIL_PROXY" \
-         --network "$JAIL_NET_EGRESS" "$JAIL_PROXY_IMAGE" >/dev/null; then
-      if ! podman cp "$filter" "$name:/etc/tinyproxy/allowlist" ||
-         ! podman start "$name" >/dev/null ||
-         ! podman network connect "$net" "$name"; then
-        rm -f -- "$filter"
-        podman rm -f "$name" >/dev/null 2>&1 || true
-        jail_die "could not set up the proxy $name (see the podman error above)."
-      fi
-    elif ! podman container exists "$name" 2>/dev/null; then
-      rm -f -- "$filter"
+    jail_internal_network "$net" "dev-infra.proxy-group=$JAIL_PROXY"
+    # When create fails but the proxy exists, another launch made it a moment ago.
+    jail_proxy_create "$name" "$net" "dev-infra.proxy-group=$JAIL_PROXY" ||
+      podman container exists "$name" 2>/dev/null ||
       jail_die "could not create the proxy $name (see the podman error above)."
-    fi
-    # (create failed but it exists: another launch made it a moment ago.)
-    rm -f -- "$filter"
   fi
   # Created but never started: another launch is copying the filter in.
   # Starting it here could run tinyproxy before the copy, with the filter
@@ -763,6 +798,80 @@ jail_prune_proxies() {
       echo "   kept the network $net: a container is still on it ('podman network inspect $net')"
   done < <(podman network ls --filter "label=dev-infra.proxy-group=$JAIL_PROXY" --format '{{.Name}}' 2>/dev/null)
   echo ">> Per-project proxies: $removed removed, $kept still in use."
+}
+
+# --- MCP servers (claude-jailed) ---
+# An MCP server runs in a container of its own, defined in mcp/<name>/ (a
+# Containerfile and an mcp.conf) and started with 'make mcp-up NAME=<name>'
+# (mcp-servers.sh). 'mcp' in a project's profile (or JAIL_MCP_SERVERS) lists
+# the ones that project's claude-jailed gets: the jail joins each server's
+# network, and Claude gets the servers with --mcp-config, over HTTP. The
+# server never sees a project (nothing is mounted) and runs as an unprivileged
+# user that is not you, read-only, without capabilities.
+#
+# Two networks per server, both internal and without DNS:
+#   $JAIL_NET_INTERNAL-mcp-<name>      the server and the jails of the
+#                                      projects that list it
+#   $JAIL_NET_INTERNAL-mcp-<name>-out  the server and its own proxy,
+#                                      $JAIL_PROXY-mcp-<name>, which lets
+#                                      through the allowlist of its mcp.conf
+#                                      (no allowlist: no proxy, no way out)
+# So a project that does not list a server cannot reach it, and a jail never
+# shares a network with a server's proxy: listing a server gives Claude its
+# tools, not the hosts the server can reach.
+JAIL_MCP_DIR="${JAIL_MCP_DIR:-$JAIL_INFRA/mcp}"
+JAIL_MCP_PREFIX="${JAIL_MCP_PREFIX:-claude-mcp}"
+# Lowercase letters, digits and '-', up to 32: it goes into container,
+# network and image names, and into Claude's tool names (mcp__<name>__...).
+JAIL_MCP_NAME_RE='^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$'
+
+# jail_mcp_list_check: JAIL_MCP_SERVERS checked, each one a server name, and
+# without repeats. Run by jail_settings, so both launchers refuse a bad one.
+jail_mcp_list_check() {
+  local names n list=""
+  read -r -a names <<<"$JAIL_MCP_SERVERS"
+  [ "${#names[@]}" -gt 0 ] || { JAIL_MCP_SERVERS=""; return 0; }
+  for n in "${names[@]}"; do
+    [[ $n =~ $JAIL_MCP_NAME_RE ]] ||
+      jail_die "$JAIL_FROM: '$n' is not an MCP server name." \
+        "Names are those of the folders in $JAIL_MCP_DIR: lowercase letters, digits and '-'."
+    case " $list " in *" $n "*) continue ;; esac
+    list="${list:+$list }$n"
+  done
+  JAIL_MCP_SERVERS="$list"
+}
+
+# jail_mcp_flags: what claude-jailed adds for the servers in JAIL_MCP_SERVERS:
+# JAIL_MCP_FLAGS (each server's network and address), JAIL_MCP_HOSTS (",name"
+# for NO_PROXY: they are reached directly) and JAIL_MCP_CONFIG (the
+# --mcp-config=<json> argument for claude, empty without servers). A server
+# that is not running stops the launch: the project asked for it.
+jail_mcp_flags() {
+  local n server net ip url json=""
+  JAIL_MCP_FLAGS=() JAIL_MCP_HOSTS="" JAIL_MCP_CONFIG=""
+  [ -n "$JAIL_MCP_SERVERS" ] || return 0
+  for n in $JAIL_MCP_SERVERS; do
+    server="$JAIL_MCP_PREFIX-$n" net="$JAIL_NET_INTERNAL-mcp-$n"
+    [ "$(podman container inspect -f '{{.State.Running}}' "$server" 2>/dev/null)" = true ] ||
+      jail_die "the MCP server '$n' is not running ($JAIL_FROM)." \
+        "Start it with 'make mcp-up NAME=$n' (after a reboot too), then launch again."
+    ip="$(jail_ip_on "$net" "$server")"
+    [ -n "$ip" ] || jail_die "the MCP server $server is not on $net." \
+      "Recreate it with 'make mcp-up NAME=$n'."
+    # Written by mcp-servers.sh; checked again, since it goes into JSON.
+    url="$(podman container inspect -f '{{index .Config.Labels "dev-infra.mcp.url"}}' "$server" 2>/dev/null || true)"
+    [[ $url =~ ^http://$server:[0-9]{1,5}/[A-Za-z0-9._~/-]*$ ]] ||
+      jail_die "the MCP server $server has no usable URL label (got '$url')." \
+        "Recreate it with 'make mcp-up NAME=$n'."
+    JAIL_MCP_FLAGS+=(--network "$net" --add-host "$server:$ip")
+    JAIL_MCP_HOSTS="$JAIL_MCP_HOSTS,$server"
+    json="$json${json:+,}\"$n\":{\"type\":\"http\",\"url\":\"$url\"}"
+    printf 'MCP server: %s, %s\n' "$n" "$url" >&2
+  done
+  # '=': with a space, claude's variadic --mcp-config would also take the
+  # next argument (a prompt, say) as a config. The quotes are JSON, for claude.
+  # shellcheck disable=SC2034,SC2089  # used by launch_claude_jailed.sh
+  JAIL_MCP_CONFIG="--mcp-config={\"mcpServers\":{$json}}"
 }
 
 # Each launcher runs jail_guard, jail_settings, jail_check_volumes and

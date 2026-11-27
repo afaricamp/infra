@@ -22,7 +22,7 @@ done
 # spoofed by a registry earlier in the search list. And pinned: a tag can be
 # moved to other content, a digest cannot. 'name:tag@sha256:<index digest>',
 # the tag kept so that readers and 'make bump-images' know what it is.
-CONTAINERFILES=(claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy claude-jail/egress-hardening/Containerfile.cache devcontainers/*/Containerfile tests/Containerfile)
+CONTAINERFILES=(claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy claude-jail/egress-hardening/Containerfile.cache devcontainers/*/Containerfile mcp/*/Containerfile tests/Containerfile tests/integration/fixtures/mcp/*/Containerfile)
 pinned() { [[ $1 =~ ^[^@]+:[^/@]+@sha256:[0-9a-f]{64}$ ]]; }
 # image_policy WHAT IMAGE
 image_policy() {
@@ -68,6 +68,25 @@ if grep -qxF '  proxy_set_header Authorization "";' "$CACHE_CONF" &&
   headers_ok=yes
 fi
 check "$CACHE_CONF drops Authorization and Cookie, and sets proxy headers only at the http level" [ "$headers_ok" = yes ]
+
+# Every MCP server definition in mcp/ can be started: a usable name (as
+# JAIL_MCP_NAME_RE in common.sh), a Containerfile and an mcp.conf. One built
+# with npm installs from its lockfile, checked, and runs no install script.
+for d in mcp/*/; do
+  n="$(basename "$d")"
+  def_ok=no
+  if [[ $n =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]] && [ -f "$d/Containerfile" ] && [ -f "$d/mcp.conf" ]; then
+    def_ok=yes
+  fi
+  check "mcp/$n: a usable name, a Containerfile and an mcp.conf" [ "$def_ok" = yes ]
+  if [ -f "$d/package.json" ]; then
+    npm_ok=no
+    if [ -f "$d/package-lock.json" ] && grep -qE 'npm ci .*--ignore-scripts' "$d/Containerfile"; then
+      npm_ok=yes
+    fi
+    check "mcp/$n: npm ci from package-lock.json, with --ignore-scripts" [ "$npm_ok" = yes ]
+  fi
+done
 
 # Every devcontainer.json parses, names an image we build, and keeps the
 # hardening flags the README promises.
