@@ -20,6 +20,8 @@
 #   STUB_SELINUX_CTX    their SELinux context (default '?', no SELinux)
 #   STUB_UNREADABLE     volumes stat cannot read (Permission denied)
 #   STUB_CHECK_FAIL     set to make the check container fail to start
+#   STUB_ARCH           answer to 'info --format {{.Host.Arch}}' (default amd64;
+#                       'none' makes it fail)
 #   The jail itself ('podman run' of anything else):
 #   STUB_RUN_EFFECT     shell snippet run in the current directory, as if
 #                       Claude had changed the project (e.g. 'echo x >> Makefile')
@@ -47,6 +49,10 @@ case "$1 ${2:-}" in
     esac ;;
   "image exists")
     exit "${STUB_IMAGE_EXISTS:-0}" ;;
+  "info --format")
+    # Only the architecture is asked for. STUB_ARCH=none: podman cannot answer.
+    [ "${STUB_ARCH:-amd64}" = none ] && exit 125
+    echo "${STUB_ARCH:-amd64}" ;;
   "network exists")
     grep -qxF -- "$last" "$log.removed" 2>/dev/null && exit 1
     case " ${STUB_NETWORKS:-} " in *" $last "*) exit 0 ;; esac

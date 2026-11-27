@@ -66,6 +66,7 @@ TESTS          ?= tests/integration
 SHELLCHECK     := docker.io/koalaman/shellcheck:v0.10.0
 HADOLINT       := docker.io/hadolint/hadolint:v2.12.0
 SCRIPTS        := dev.sh claude-jail/common.sh claude-jail/launch_claude.sh \
+                  claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh \
                   claude-jail/egress-hardening/setup-egress.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
                   tests/static/policy.sh tests/ci/setup-rootless-podman.sh \
@@ -142,7 +143,8 @@ endif
 
 download-claude: ## Download the Claude binary ONLY if missing (skips the large re-download)
 	@if [ -f "$(CLAUDE_JAIL)/claude-bin" ]; then \
-	  echo ">> claude-bin already present ($$("$(CLAUDE_JAIL)/claude-bin" --version 2>/dev/null || echo 'unknown version'))."; \
+	  v="$$(sed -n 's/^version=//p; s/^platform=/ /p' "$(CLAUDE_JAIL)/claude-bin.info" 2>/dev/null | tr -d '\n')"; \
+	  echo ">> claude-bin already present ($${v:-not checked against the release manifest: make force-download-claude})."; \
 	  echo "   To re-download: make update-claude  (or make force-download-claude)"; \
 	else \
 	  $(MAKE) --no-print-directory force-download-claude; \
@@ -152,29 +154,32 @@ update-claude: ## Re-download Claude and rebuild its image
 	$(MAKE) --no-print-directory force-download-claude
 	$(MAKE) --no-print-directory build-claude
 
-force-download-claude: ## Always re-download the native binary (VERSION=latest|x.y.z)
+force-download-claude: ## Always re-download the native binary and check it against the release manifest (VERSION=latest|x.y.z)
 	@echo ">> Downloading Claude Code ($(VERSION)) inside an ephemeral container (host untouched)..."
 	@mkdir -p "$(CLAUDE_JAIL)"
 	@# No bind mount: the binary comes out with 'podman cp', which also works
 	@# when podman is a remote client (macOS) and needs no SELinux relabel.
 	@# It is built for the container's architecture, i.e. the one the jail runs on.
+	@# fetch-claude.sh runs inside the container: the official installer, then
+	@# its own check of the binary against the release manifest (claude-bin.info).
 	-@podman rm -f claude-download >/dev/null 2>&1
-	podman run --name claude-download $(UBUNTU) bash -c '\
-	  apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates tar gzip >/dev/null || exit 1; \
-	  curl -fsSL https://claude.ai/install.sh | bash -s $(VERSION); \
-	  bin=$$(readlink -f $$HOME/.local/bin/claude); \
-	  test -x "$$bin" || { echo "ERROR: the installer did not leave a binary behind"; exit 1; }; \
-	  cp "$$bin" /claude-bin && echo -n "Downloaded version: " && /claude-bin --version' \
+	podman run --name claude-download -e VERSION='$(VERSION)' $(UBUNTU) bash -c "$$(cat '$(CURDIR)/claude-jail/fetch-claude.sh')" \
 	  || { podman rm -f claude-download >/dev/null 2>&1; exit 1; }
-	podman cp claude-download:/claude-bin "$(CLAUDE_JAIL)/claude-bin"
+	@# Copied next to the old ones and moved in place together, so a failed
+	@# copy never leaves a binary next to another binary's .info.
+	podman cp claude-download:/claude-bin "$(CLAUDE_JAIL)/claude-bin.new"
+	podman cp claude-download:/claude-bin.info "$(CLAUDE_JAIL)/claude-bin.info.new"
 	@podman rm -f claude-download >/dev/null
-	@chmod +x "$(CLAUDE_JAIL)/claude-bin"
+	@chmod +x "$(CLAUDE_JAIL)/claude-bin.new"
+	@mv -f "$(CLAUDE_JAIL)/claude-bin.new" "$(CLAUDE_JAIL)/claude-bin"
+	@mv -f "$(CLAUDE_JAIL)/claude-bin.info.new" "$(CLAUDE_JAIL)/claude-bin.info"
+	@CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" "$(CURDIR)/claude-jail/check-claude-bin.sh"
 	@echo ">> Done: $(CLAUDE_JAIL)/claude-bin"
 
 build: build-claude build-go build-php build-react build-vue ## Build all five images
 
-build-claude: ## Build the Claude jail image
-	@test -f "$(CLAUDE_JAIL)/claude-bin" || { echo "ERROR: claude-bin missing. Run 'make download-claude'"; exit 1; }
+build-claude: ## Build the Claude jail image (refuses an unchecked, changed or wrong-architecture binary)
+	@CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" "$(CURDIR)/claude-jail/check-claude-bin.sh"
 	podman build -t $(JAIL_IMAGE) "$(CLAUDE_JAIL)"
 
 # The dev container images pin their user to UID 1000 (no --build-arg with
@@ -297,7 +302,7 @@ fix-volumes: ## Repair ownership and SELinux labels of the Claude jail volumes
 	   $$args $(JAIL_IMAGE) -R 1000:1000 /v && echo "OK: volumes fixed."
 
 verify: ## Sanity checks for the environment
-	@echo "== Claude binary =="; test -x "$(CLAUDE_JAIL)/claude-bin" && echo "  OK" || echo "  MISSING"
+	@echo "== Claude binary =="; CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" "$(CURDIR)/claude-jail/check-claude-bin.sh" --report
 	@echo "== Images =="; podman images --format '  {{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E 'claude-jail|devcontainer|$(JAIL_PROXY_IMAGE)' || echo "  none"
 ifeq ($(OS),Darwin)
 	@echo "== Podman machine =="; podman machine inspect --format '  {{.Name}}: {{.State}}, rootful={{.Rootful}}' 2>/dev/null || echo "  none (make podman-setup)"

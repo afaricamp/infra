@@ -21,7 +21,7 @@ use_stubs() {
   export STUB_ROOT="$BATS_TEST_TMPDIR/stub"
   export STUB_VOLUMES=""
   unset STUB_PROXY_RUNNING STUB_SELINUX_CTX STUB_OWNER STUB_IMAGE_EXISTS STUB_UNREADABLE STUB_CHECK_FAIL
-  unset STUB_RUN_EFFECT STUB_RUN_EXIT
+  unset STUB_RUN_EFFECT STUB_RUN_EXIT STUB_ARCH
 }
 
 # Arguments of the last fake 'podman run', one per line.
