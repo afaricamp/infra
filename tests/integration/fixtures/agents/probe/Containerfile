@@ -1,0 +1,16 @@
+# Stand-in agent for tests/integration/agents.bats: an image laid out like
+# an agent's (UID 1000, home /home/agent, project and tmp in it), whose
+# entrypoint runs its arguments as a command, like claude-stub for Claude.
+FROM docker.io/library/ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY probe-agent /usr/local/bin/probe-agent
+RUN chmod 755 /usr/local/bin/probe-agent && \
+    (userdel -f -r ubuntu 2>/dev/null || true) && \
+    groupadd -g 1000 agent && useradd -l -m -u 1000 -g 1000 -s /bin/bash agent
+USER agent
+WORKDIR /home/agent
+RUN mkdir -p project tmp .probe
+WORKDIR /home/agent/project
+ENTRYPOINT ["probe-agent"]

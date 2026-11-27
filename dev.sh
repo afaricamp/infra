@@ -50,6 +50,19 @@ alias claude-caches="$DEV_CLAUDE_JAIL/egress-hardening/setup-caches.sh"         
 alias claude-profile='make -C "$DEV_INFRA" --no-print-directory profile PROJECT="$PWD"'  # this project's settings
 alias claude-secrets='make -C "$DEV_INFRA" --no-print-directory secrets PROJECT="$PWD"'  # its dev container's secrets
 
+# --- Other agents, in the same jail (agents/<name>/; make build-agent AGENT=<name>) ---
+# usage:  agent-jail aider [args]  |  agent-jailed aider [args]
+agent-jail() {
+  [ $# -gt 0 ] || { echo "usage: agent-jail <agent> [args]" >&2; return 2; }
+  local a="$1"; shift
+  JAIL_AGENT="$a" "$DEV_CLAUDE_JAIL/launch_claude.sh" "$@"
+}
+agent-jailed() {
+  [ $# -gt 0 ] || { echo "usage: agent-jailed <agent> [args]" >&2; return 2; }
+  local a="$1"; shift
+  JAIL_AGENT="$a" "$DEV_CLAUDE_JAIL/egress-hardening/launch_claude_jailed.sh" "$@"
+}
+
 # --- Build dev container images (delegates to the Makefile) ---
 alias dc-build-go='make -C "$DEV_INFRA" build-go'
 alias dc-build-php='make -C "$DEV_INFRA" build-php'

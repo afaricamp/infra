@@ -1,0 +1,6 @@
+# Hosts Aider's jail may reach with claude-jailed's proxy ('agent-jailed
+# aider'), one tinyproxy pattern per line. The APIs of the two providers most
+# used with it; add another one's (openrouter.ai, api.deepseek.com, ...) here
+# for every project, or to 'allowlist' in one project's profile.
+(^|\.)anthropic\.com$
+(^|\.)openai\.com$

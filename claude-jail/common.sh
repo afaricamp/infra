@@ -42,6 +42,110 @@ jail_die() {
   exit 1
 }
 
+# jail_trim VAR TEXT: TEXT without leading and trailing whitespace, into VAR.
+jail_trim() {
+  local s="$2"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf -v "$1" '%s' "$s"
+}
+
+# jail_conf_read FILE PREFIX KEYS: parse FILE into PREFIX<key> for each of the
+# space-separated KEYS it sets; JAIL_CONF_SET is the list of keys it set.
+# 'key = value' lines and '#' comment lines, read literally: no quotes, $ or
+# backslashes, so nothing in it can run. An unknown key, a key set twice or a
+# line without '=' stops here, so a typo cannot leave a default in place
+# without a word. Used for project profiles and MCP server definitions.
+jail_conf_read() {
+  local file="$1" prefix="$2" keys="$3" line key value n=0 k
+  for k in $keys; do unset "$prefix$k"; done
+  JAIL_CONF_SET=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    jail_trim line "$line"
+    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in
+      *=*) ;;
+      *) jail_die "$file, line $n: expected 'key = value', got: $line" ;;
+    esac
+    jail_trim key "${line%%=*}"
+    jail_trim value "${line#*=}"
+    case " $keys " in
+      *" $key "*) ;;
+      *) jail_die "$file, line $n: unknown key '$key'." "Known keys: $keys" ;;
+    esac
+    case " $JAIL_CONF_SET " in
+      *" $key "*) jail_die "$file, line $n: '$key' is set twice." ;;
+    esac
+    case "$value" in
+      *'"'*|*"'"*|*'`'*|*'$'*|*\\*)
+        jail_die "$file, line $n: values are read literally and never run:" \
+          "no quotes, \$ or backslashes (got: $value)." ;;
+    esac
+    printf -v "$prefix$key" '%s' "$value"
+    JAIL_CONF_SET="${JAIL_CONF_SET:+$JAIL_CONF_SET }$key"
+  done < "$file"
+}
+
+# --- The agent ---
+# claude, the default, is this folder (claude-jail/). Another agent is a
+# folder in agents/ (JAIL_AGENTS_DIR): a Containerfile, an agent.conf and an
+# allowlist, see agents/README.md. JAIL_AGENT picks it ('agent-jail aider').
+# Everything else, the guards, limits, mounts, read-only paths, profiles,
+# proxies, snapshots and the report at exit, is the same for every agent.
+# What only Claude has: the devkit plugin and personal skills, the image
+# variants, MCP servers, and its own volumes and image (JAIL_IMAGE).
+#   home      where its user's home is, in its image: the project is mounted
+#             at <home>/project, the tmpfs at <home>/tmp
+#   volumes   name:path pairs, the volume $JAIL_VOLUME_PREFIX-<agent>-<name>
+#             mounted at <home>/<path>
+# Its image is localhost/<agent>-jail:latest (JAIL_AGENT_IMAGE overrides it),
+# built by 'make build-agent AGENT=<agent>'. Its own API key, if it needs
+# one, is in $JAIL_AGENT_ENV_DIR/<agent>.env (see jail_settings).
+JAIL_AGENT="${JAIL_AGENT:-claude}"
+JAIL_AGENTS_DIR="${JAIL_AGENTS_DIR:-$JAIL_INFRA/agents}"
+JAIL_AGENT_ENV_DIR="${JAIL_AGENT_ENV_DIR:-$HOME/.config/dev-infra/agents}"
+JAIL_AGENT_NAME_RE='^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$'
+JAIL_HOME=/home/claudeuser
+JAIL_VOLUME_TARGETS=(.claude go .cache)
+JAIL_AGENT_ALLOWLIST=""
+
+# jail_agent_load: JAIL_AGENT checked, and its agent.conf read into
+# JAIL_IMAGE, JAIL_HOME, JAIL_VOLUMES, JAIL_VOLUME_TARGETS and
+# JAIL_AGENT_ALLOWLIST. Nothing to do for claude.
+jail_agent_load() {
+  local dir pair name path names=" "
+  [[ $JAIL_AGENT =~ $JAIL_AGENT_NAME_RE ]] ||
+    jail_die "JAIL_AGENT: '$JAIL_AGENT' is not an agent name (lowercase letters, digits and '-')."
+  [ "$JAIL_AGENT" != claude ] || return 0
+  dir="$JAIL_AGENTS_DIR/$JAIL_AGENT"
+  if [ ! -f "$dir/agent.conf" ] || [ ! -f "$dir/Containerfile" ] || [ ! -f "$dir/allowlist" ]; then
+    jail_die "there is no agent '$JAIL_AGENT': $dir needs a Containerfile, an agent.conf and an allowlist." \
+      "The agents are claude and the folders in $JAIL_AGENTS_DIR."
+  fi
+  jail_conf_read "$dir/agent.conf" JAIL_AGENTCONF_ "home volumes"
+  if ! [[ ${JAIL_AGENTCONF_home:-} =~ ^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || [[ $JAIL_AGENTCONF_home == *..* ]]; then
+    jail_die "$dir/agent.conf: home has to be an absolute path such as /home/agent (got '${JAIL_AGENTCONF_home:-}')."
+  fi
+  JAIL_HOME="$JAIL_AGENTCONF_home"
+  JAIL_VOLUMES=() JAIL_VOLUME_TARGETS=()
+  for pair in ${JAIL_AGENTCONF_volumes:-}; do
+    name="${pair%%:*}" path="${pair#*:}"
+    if ! [[ $name =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [ "$name" = "$pair" ] ||
+       ! [[ $path =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || [[ /$path/ == */../* ]]; then
+      jail_die "$dir/agent.conf: '$pair' in volumes is not name:path, a path inside the home such as home:.aider."
+    fi
+    case "$names" in *" $name "*) jail_die "$dir/agent.conf: the volume '$name' is there twice." ;; esac
+    names="$names$name "
+    JAIL_VOLUMES+=("$JAIL_VOLUME_PREFIX-$JAIL_AGENT-$name")
+    JAIL_VOLUME_TARGETS+=("$path")
+  done
+  JAIL_IMAGE="${JAIL_AGENT_IMAGE:-localhost/$JAIL_AGENT-jail:latest}"
+  JAIL_AGENT_ALLOWLIST="$dir/allowlist"
+}
+jail_agent_load
+
+
 # --- Guard: only launch from a project directory under $DEV_PROJECTS ---
 # The project bind mount uses :z, which relabels SELinux recursively, and
 # everything under it becomes writable by whatever runs in the jail. So the
@@ -90,7 +194,8 @@ jail_guard() {
 # container start per launch; JAIL_SKIP_VOLUME_CHECK=1 skips it.
 jail_check_volumes() {
   [ "${JAIL_SKIP_VOLUME_CHECK:-0}" = "1" ] && return 0
-  local v mounts=() present=() out line owner ctx
+  local v mounts=() present=() out line owner ctx fix who
+  [ "${#JAIL_VOLUMES[@]}" -gt 0 ] || return 0
   for v in "${JAIL_VOLUMES[@]}"; do
     podman volume inspect "$v" >/dev/null 2>&1 || continue
     mounts+=(-v "$v:/check/$v")
@@ -103,23 +208,27 @@ jail_check_volumes() {
     "${mounts[@]}" "$JAIL_IMAGE" -c '%n %u %C' "${present[@]/#//check/}" 2>&1)" || true
 
   for v in "${present[@]}"; do
+    # Claude's volumes hold its login: repaired in place. Another agent's
+    # only hold its own state: removed, and made again at the next launch.
+    fix="make fix-volumes" who=Claude
+    [ "$JAIL_AGENT" = claude ] || fix="podman volume rm $v (it only holds $JAIL_AGENT's own state)" who="$JAIL_AGENT"
     line="$(printf '%s\n' "$out" | grep -m1 "^/check/$v " || true)"
     if [ -z "$line" ]; then
       case "$out" in
         *"/check/$v"*) jail_die "volume '$v' cannot be read from inside the jail." \
           "Most likely a private SELinux label left by ':Z', or files owned by another UID." \
-          "Claude would get 'Permission denied' on its files. Fix it with: make fix-volumes" ;;
+          "$who would get 'Permission denied' on its files. Fix it with: $fix" ;;
         *) jail_die "the volume check could not run (skip it with JAIL_SKIP_VOLUME_CHECK=1):" "$out" ;;
       esac
     fi
     read -r _ owner ctx <<<"$line"
     case "$ctx" in
       *:c[0-9]*) jail_die "volume '$v' has a private SELinux label ($ctx)." \
-        "Claude will get 'Permission denied' on its files. Fix it with: make fix-volumes" ;;
+        "$who will get 'Permission denied' on its files. Fix it with: $fix" ;;
     esac
     if [ "$owner" != 1000 ]; then
       jail_die "volume '$v' is not owned by you (UID $owner inside the jail, expected 1000)." \
-        "Claude will get 'Permission denied' on its files. Fix it with: make fix-volumes"
+        "$who will get 'Permission denied' on its files. Fix it with: $fix"
     fi
   done
 }
@@ -196,7 +305,7 @@ jail_ro_add() {
   esac
   case "$seen" in *" $rel "*) return 0 ;; esac
   seen="$seen$rel "
-  JAIL_PROJECT_FLAGS+=(-v "$real":"/home/claudeuser/project/$rel":ro)
+  JAIL_PROJECT_FLAGS+=(-v "$real":"$JAIL_HOME/project/$rel":ro)
 }
 
 # jail_ro_gitfile REL: REL is a .git file ('gitdir: <path>'). Protect the hooks
@@ -223,7 +332,7 @@ jail_project_flags() {
   local here p seen=" "
   here="$(pwd -P)"
   # The label tells 'make restore-snapshot' a jail is using this project.
-  JAIL_PROJECT_FLAGS=(-v "$here":/home/claudeuser/project:z --label "dev-infra.project=$here")
+  JAIL_PROJECT_FLAGS=(-v "$here":"$JAIL_HOME/project":z --label "dev-infra.project=$here")
   for p in $JAIL_RO_PATHS; do jail_ro_add "$p"; done
   case "$JAIL_RO_NESTED_DEPTH" in
     ''|*[!0-9]*) jail_die "JAIL_RO_NESTED_DEPTH must be a number (got '$JAIL_RO_NESTED_DEPTH')." ;;
@@ -263,7 +372,7 @@ jail_project_flags() {
 jail_name() {
   local base
   base="$(basename "$(pwd -P)" | tr -c 'a-zA-Z0-9_.-' '-')"
-  printf 'claude-%s-%s' "${base%-}" "$$"
+  printf '%s-%s-%s' "$JAIL_AGENT" "${base%-}" "$$"
 }
 
 # --- Shared limits and hardening ---
@@ -286,18 +395,23 @@ if [ -t 0 ] && [ -t 1 ]; then JAIL_TTY_FLAGS=(-it); fi
 JAIL_FLAGS=(
   "${JAIL_TTY_FLAGS[@]}"
   --name "$(jail_name)"
+  --label "dev-infra.agent=$JAIL_AGENT"
   --userns "keep-id:uid=1000,gid=1000"
   --security-opt no-new-privileges
   --cap-drop ALL
-  -e TMPDIR=/home/claudeuser/tmp
-  --tmpfs /home/claudeuser/tmp:rw,size=1g,mode=1777
+  -e TMPDIR="$JAIL_HOME/tmp"
+  --tmpfs "$JAIL_HOME/tmp:rw,size=1g,mode=1777"
   --tmpfs /tmp:rw,size=1g,mode=1777
-  # Named volumes: podman already labels these for container use, so :Z is
-  # unnecessary here, and harmful: see jail_check_volumes.
-  -v "${JAIL_VOLUMES[0]}":/home/claudeuser/.claude
-  -v "${JAIL_VOLUMES[1]}":/home/claudeuser/go
-  -v "${JAIL_VOLUMES[2]}":/home/claudeuser/.cache
 )
+# Named volumes (claude: claude-home on ~/.claude, claude-gopath on ~/go,
+# claude-gocache on ~/.cache): podman already labels these for container
+# use, so :Z is unnecessary here, and harmful: see jail_check_volumes.
+if [ "${#JAIL_VOLUMES[@]}" -gt 0 ]; then
+  for i in "${!JAIL_VOLUMES[@]}"; do
+    JAIL_FLAGS+=(-v "${JAIL_VOLUMES[$i]}:$JAIL_HOME/${JAIL_VOLUME_TARGETS[$i]}")
+  done
+  unset i
+fi
 
 # --- Shared skills: the devkit plugin, read-only ---
 # Loaded in every project as /devkit:<skill> (see devkit/README.md). A plugin
@@ -308,7 +422,7 @@ JAIL_FLAGS=(
 # for the same reason as the project mount: several jails read it at once.
 # JAIL_PLUGIN_DIR= (empty) leaves it out.
 JAIL_PLUGIN_DIR="${JAIL_PLUGIN_DIR-$JAIL_INFRA/devkit}"
-if [ -n "$JAIL_PLUGIN_DIR" ] && [ -d "$JAIL_PLUGIN_DIR" ]; then
+if [ "$JAIL_AGENT" = claude ] && [ -n "$JAIL_PLUGIN_DIR" ] && [ -d "$JAIL_PLUGIN_DIR" ]; then
   # The comma belongs to the mount options (ro,z).
   # shellcheck disable=SC2054
   JAIL_FLAGS+=(
@@ -326,7 +440,7 @@ fi
 # volume is hidden while this is in place.
 # JAIL_PERSONAL_SKILLS_DIR=<dir> picks another directory, empty leaves it out.
 JAIL_PERSONAL_SKILLS_DIR="${JAIL_PERSONAL_SKILLS_DIR-$JAIL_INFRA/personal-skills}"
-if [ -n "$JAIL_PERSONAL_SKILLS_DIR" ] && [ -d "$JAIL_PERSONAL_SKILLS_DIR" ]; then
+if [ "$JAIL_AGENT" = claude ] && [ -n "$JAIL_PERSONAL_SKILLS_DIR" ] && [ -d "$JAIL_PERSONAL_SKILLS_DIR" ]; then
   # :z relabels the directory recursively, and the mount exposes all of it.
   case "$(readlink -f "$JAIL_PERSONAL_SKILLS_DIR")" in
     /|"$(readlink -f "$HOME")"|"$(readlink -f "$HOME")/.claude")
@@ -567,51 +681,6 @@ jail_profile_check() {
     "Keep profiles in ~/.config/dev-infra/projects, or point JAIL_PROFILES_DIR outside $DEV_PROJECTS."
 }
 
-# jail_trim VAR TEXT: TEXT without leading and trailing whitespace, into VAR.
-jail_trim() {
-  local s="$2"
-  s="${s#"${s%%[![:space:]]*}"}"
-  s="${s%"${s##*[![:space:]]}"}"
-  printf -v "$1" '%s' "$s"
-}
-
-# jail_conf_read FILE PREFIX KEYS: parse FILE into PREFIX<key> for each of the
-# space-separated KEYS it sets; JAIL_CONF_SET is the list of keys it set.
-# 'key = value' lines and '#' comment lines, read literally: no quotes, $ or
-# backslashes, so nothing in it can run. An unknown key, a key set twice or a
-# line without '=' stops here, so a typo cannot leave a default in place
-# without a word. Used for project profiles and MCP server definitions.
-jail_conf_read() {
-  local file="$1" prefix="$2" keys="$3" line key value n=0 k
-  for k in $keys; do unset "$prefix$k"; done
-  JAIL_CONF_SET=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    n=$((n + 1))
-    jail_trim line "$line"
-    case "$line" in ''|'#'*) continue ;; esac
-    case "$line" in
-      *=*) ;;
-      *) jail_die "$file, line $n: expected 'key = value', got: $line" ;;
-    esac
-    jail_trim key "${line%%=*}"
-    jail_trim value "${line#*=}"
-    case " $keys " in
-      *" $key "*) ;;
-      *) jail_die "$file, line $n: unknown key '$key'." "Known keys: $keys" ;;
-    esac
-    case " $JAIL_CONF_SET " in
-      *" $key "*) jail_die "$file, line $n: '$key' is set twice." ;;
-    esac
-    case "$value" in
-      *'"'*|*"'"*|*'`'*|*'$'*|*\\*)
-        jail_die "$file, line $n: values are read literally and never run:" \
-          "no quotes, \$ or backslashes (got: $value)." ;;
-    esac
-    printf -v "$prefix$key" '%s' "$value"
-    JAIL_CONF_SET="${JAIL_CONF_SET:+$JAIL_CONF_SET }$key"
-  done < "$file"
-}
-
 # jail_profile_load: read the current project's profile, if it has one, into
 # JAIL_PROFILE_<key>. JAIL_PROFILE is its path and JAIL_PROFILE_SET the keys
 # it sets, both empty without a profile.
@@ -669,12 +738,19 @@ jail_settings() {
   [ -n "${JAIL_WATCH_PATHS+set}" ] ||
     JAIL_WATCH_PATHS="$JAIL_DEFAULT_WATCH_PATHS${JAIL_PROFILE_watch_paths:+ $JAIL_PROFILE_watch_paths}"
   jail_pick JAIL_ALLOWLIST allowlist ""
-  jail_allowlist_build "$JAIL_EGRESS_DIR/allowlist"
+  # Another agent's jail always goes through a proxy of its own, with the
+  # hosts in its allowlist file plus the project's.
+  if [ "$JAIL_AGENT" = claude ]; then
+    jail_allowlist_build "$JAIL_EGRESS_DIR/allowlist"
+  else
+    jail_allowlist_build "$JAIL_AGENT_ALLOWLIST" always
+  fi
   jail_pick JAIL_MCP_SERVERS mcp ""
   jail_mcp_list_check
   JAIL_MCP_FROM="$JAIL_FROM"
   jail_pick JAIL_VARIANT image full
   jail_variant_pick
+  jail_agent_env
   jail_pick JAIL_SNAPSHOT snapshot off
   case "$JAIL_SNAPSHOT" in
     on|1) JAIL_SNAPSHOT=on ;;
@@ -713,6 +789,15 @@ jail_variant_image() {
 # jail_pick has set JAIL_VARIANT.
 # shellcheck disable=SC2153
 jail_variant_pick() {
+  if [ "$JAIL_AGENT" != claude ]; then
+    [ "$JAIL_VARIANT" = full ] ||
+      printf "NOTE: 'image = %s' is for Claude's jail; %s has an image of its own.\n" "$JAIL_VARIANT" "$JAIL_AGENT" >&2
+    podman image exists "$JAIL_IMAGE" 2>/dev/null ||
+      jail_die "the image of $JAIL_AGENT, $JAIL_IMAGE, is not built." \
+        "Build it with 'make build-agent AGENT=$JAIL_AGENT'."
+    printf 'Agent: %s (%s)\n' "$JAIL_AGENT" "$JAIL_IMAGE" >&2
+    return 0
+  fi
   case " $JAIL_VARIANTS " in
     *" $JAIL_VARIANT "*) ;;
     *) jail_die "$JAIL_FROM: '$JAIL_VARIANT' is not an image variant: full, go, node or php." ;;
@@ -730,6 +815,22 @@ jail_variant_pick() {
     go) [ ! -f package.json ] || jail_variant_note package.json Node "full (or node)" ;;
   esac
   return 0
+}
+
+# jail_agent_env: the agent's own API key, if it needs one: the env file
+# $JAIL_AGENT_ENV_DIR/<agent>.env ('make agent-env AGENT=<agent>'), passed
+# to its jail with --env-file. Unlike the secrets of a dev container (see
+# "Secrets"), this one is meant for the jail: the agent cannot work without
+# it, as Claude cannot without its login. It has to be private and outside
+# the projects.
+jail_agent_env() {
+  local file="$JAIL_AGENT_ENV_DIR/$JAIL_AGENT.env"
+  [ -e "$file" ] || return 0
+  jail_outside_projects "$file" "the key file" \
+    "Keep it in ~/.config/dev-infra/agents, or point JAIL_AGENT_ENV_DIR outside DEV_PROJECTS."
+  jail_private_file "$file" ||
+    jail_die "$file is not private: others can read it, or it is not yours." "Make it private with 'chmod 600 $file'."
+  JAIL_FLAGS+=(--env-file "$file")
 }
 
 # jail_variant_note FILE TOOL VARIANT: the project has FILE, this image has
@@ -798,22 +899,23 @@ jail_ip_on() {
     "$2" 2>/dev/null || true
 }
 
-# jail_allowlist_build BASE: JAIL_ALLOWLIST checked and turned into a
-# tinyproxy filter, sorted: the patterns of the allowlist file BASE (none when
-# BASE is empty) plus the entries. Sets JAIL_ALLOWLIST_FILTER (empty without
-# an allowlist) and JAIL_ALLOWLIST_HASH. Stops on an entry that is not a
+# jail_allowlist_build BASE [always]: JAIL_ALLOWLIST checked and turned into
+# a tinyproxy filter, sorted: the patterns of the allowlist file BASE (none
+# when BASE is empty) plus the entries. Sets JAIL_ALLOWLIST_FILTER (empty
+# without an allowlist, unless 'always': then BASE alone) and
+# JAIL_ALLOWLIST_HASH. Stops on an entry that is not a
 # domain or @dev. Run by jail_settings with the strict allowlist, so both
 # launchers refuse a bad one, and by mcp-servers.sh with no BASE.
 jail_allowlist_build() {
   local entries entry domain lines="" label='[a-z0-9]([a-z0-9-]*[a-z0-9])?'
   local pattern="^($label\\.)+$label\$"
   JAIL_ALLOWLIST_FILTER="" JAIL_ALLOWLIST_HASH=""
-  [ -n "$JAIL_ALLOWLIST" ] || return 0
+  [ -n "$JAIL_ALLOWLIST" ] || [ "${2:-}" = always ] || return 0
   [ -z "$1" ] || lines="$(jail_filter_lines "$1")"
   # read -a, not 'for in $JAIL_ALLOWLIST': no glob expansion of a '*'.
-  read -r -a entries <<<"$JAIL_ALLOWLIST"
-  [ "${#entries[@]}" -gt 0 ] || return 0
-  for entry in "${entries[@]}"; do
+  entries=()
+  [ -z "$JAIL_ALLOWLIST" ] || read -r -a entries <<<"$JAIL_ALLOWLIST"
+  for entry in ${entries[@]+"${entries[@]}"}; do
     case "$entry" in
       @dev)
         lines="$lines
@@ -920,7 +1022,7 @@ jail_project_proxy() {
   # shellcheck disable=SC2034  # used by launch_claude_jailed.sh
   JAIL_PROXY="$name" JAIL_PROXY_NET="$net"
   printf 'Proxy: %s, for this allowlist: %s (make egress-log JAIL_PROXY=%s)\n' \
-    "$name" "$JAIL_ALLOWLIST" "$name" >&2
+    "$name" "${JAIL_ALLOWLIST:-$JAIL_AGENT\'s own}" "$name" >&2
 }
 
 # jail_prune_proxies: remove the per-project proxies that no running jail
@@ -1001,6 +1103,10 @@ jail_mcp_flags() {
   local n server net ip url json=""
   JAIL_MCP_FLAGS=() JAIL_MCP_HOSTS="" JAIL_MCP_CONFIG=""
   [ -n "$JAIL_MCP_SERVERS" ] || return 0
+  if [ "$JAIL_AGENT" != claude ]; then
+    printf 'NOTE: MCP servers (%s) are for Claude; %s does not get them.\n' "$JAIL_MCP_SERVERS" "$JAIL_AGENT" >&2
+    return 0
+  fi
   for n in $JAIL_MCP_SERVERS; do
     server="$JAIL_MCP_PREFIX-$n" net="$JAIL_NET_INTERNAL-mcp-$n"
     [ "$(podman container inspect -f '{{.State.Running}}' "$server" 2>/dev/null)" = true ] ||

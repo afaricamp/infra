@@ -25,7 +25,7 @@ done
 # spoofed by a registry earlier in the search list. And pinned: a tag can be
 # moved to other content, a digest cannot. 'name:tag@sha256:<index digest>',
 # the tag kept so that readers and 'make bump-images' know what it is.
-CONTAINERFILES=(claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy claude-jail/egress-hardening/Containerfile.cache devcontainers/*/Containerfile mcp/*/Containerfile tests/Containerfile tests/integration/fixtures/mcp/*/Containerfile)
+CONTAINERFILES=(claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy claude-jail/egress-hardening/Containerfile.cache devcontainers/*/Containerfile mcp/*/Containerfile agents/*/Containerfile tests/Containerfile tests/integration/fixtures/mcp/*/Containerfile tests/integration/fixtures/agents/*/Containerfile)
 pinned() { [[ $1 =~ ^[^@]+:[^/@]+@sha256:[0-9a-f]{64}$ ]]; }
 # image_policy WHAT IMAGE
 image_policy() {
@@ -97,6 +97,25 @@ for dc in react vue; do
     grep -q "$jail_node" "devcontainers/$dc/Containerfile"
 done
 
+# Every agent in agents/ can be run: a usable name, its three files, and a
+# Python one installs from hashes, as wheels only (no setup code runs).
+for d in agents/*/; do
+  n="$(basename "$d")"
+  def_ok=no
+  if [[ $n =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]] && [ -f "$d/Containerfile" ] && [ -f "$d/agent.conf" ] && [ -f "$d/allowlist" ]; then
+    def_ok=yes
+  fi
+  check "agents/$n: a usable name, a Containerfile, an agent.conf and an allowlist" [ "$def_ok" = yes ]
+  if [ -f "$d/requirements.txt" ]; then
+    pip_ok=no
+    if grep -qE 'pip install .*--require-hashes.*--only-binary :all:|--require-hashes --only-binary :all:' "$d/Containerfile" &&
+       ! grep -E '^[a-zA-Z0-9]' "$d/requirements.txt" | grep -vqE '==' ; then
+      pip_ok=yes
+    fi
+    check "agents/$n: pip installs exact versions from hashes, wheels only" [ "$pip_ok" = yes ]
+  fi
+done
+
 # Every MCP server definition in mcp/ can be started: a usable name (as
 # JAIL_MCP_NAME_RE in common.sh), a Containerfile and an mcp.conf. One built
 # with npm installs from its lockfile, checked, and runs no install script.
@@ -124,7 +143,16 @@ done
 for f in claude-jail/launch_claude.sh claude-jail/egress-hardening/launch_claude_jailed.sh; do
   check "$f passes no env file and no secrets" not_in "$f" -- '--env-file|JAIL_SECRETS_DIR|dev-infra/secrets'
 done
-check "claude-jail/common.sh passes no env file" not_in claude-jail/common.sh -- '--env-file'
+# The one env file common.sh passes is the agent's own key file, built from
+# JAIL_AGENT_ENV_DIR in jail_agent_env (see "The agent").
+env_ok=no
+# shellcheck disable=SC2016  # the lines are matched as they are written
+if [ "$(grep -vE '^[[:space:]]*#' claude-jail/common.sh | grep -c -- '--env-file' || true)" = 1 ] &&
+   grep -qxF '  JAIL_FLAGS+=(--env-file "$file")' claude-jail/common.sh &&
+   grep -qxF '  local file="$JAIL_AGENT_ENV_DIR/$JAIL_AGENT.env"' claude-jail/common.sh; then
+  env_ok=yes
+fi
+check "claude-jail/common.sh passes one env file only: the agent's own key file" [ "$env_ok" = yes ]
 check "claude-jail/common.sh uses JAIL_SECRETS_DIR only to define it" \
   [ "$(grep -vE '^[[:space:]]*#' claude-jail/common.sh | grep -c JAIL_SECRETS_DIR)" = 1 ]
 for f in devcontainers/*/devcontainer.json; do
