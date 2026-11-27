@@ -50,25 +50,29 @@ setup() {
 }
 
 @test "host-executed paths are read-only inside the jail" {
-  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer"
+  mkdir -p "$PROJ/.git/hooks" "$PROJ/.devcontainer" "$PROJ/.claude"
   echo '[core]' > "$PROJ/.git/config"
   echo '{}' > "$PROJ/.devcontainer/devcontainer.json"
+  echo '{}' > "$PROJ/.claude/settings.json"
   touch "$PROJ/.envrc"
 
   for cmd in 'touch .git/hooks/pre-commit' \
              'echo "fsmonitor = evil" >> .git/config' \
              'echo "{}" > .devcontainer/devcontainer.json' \
              'touch .devcontainer/extra' \
-             'echo evil >> .envrc'; do
+             'echo evil >> .envrc' \
+             'echo "{\"hooks\": {}}" > .claude/settings.json'; do
     jail sh -c "$cmd"
     [ "$status" -ne 0 ] || { echo "writable: $cmd" >&2; false; }
   done
   [ ! -e "$PROJ/.git/hooks/pre-commit" ]
   [ "$(cat "$PROJ/.git/config")" = '[core]' ]
   [ ! -s "$PROJ/.envrc" ]
+  [ "$(cat "$PROJ/.claude/settings.json")" = '{}' ]
 
-  # The rest of .git stays writable: Claude can still commit.
-  jail sh -c 'touch .git/written-from-jail'
+  # The rest of .git and .claude stays writable: Claude can still commit and
+  # keep its project settings.
+  jail sh -c 'touch .git/written-from-jail && echo "{}" > .claude/settings.local.json'
   [ "$status" -eq 0 ]
 }
 
@@ -105,6 +109,39 @@ setup() {
   jail cat /home/claudeuser/.claude/probe
   [ "$status" -eq 0 ]
   [ "$output" = kept ]
+}
+
+@test "Node 24, npm and the corepack shims are on PATH, npm's cache in the cache volume" {
+  # One name per 'command -v': dash (the jail's sh) only answers for the first.
+  jail sh -c 'node --version && npm --version && command -v pnpm && command -v yarn && echo "cache=$NPM_CONFIG_CACHE"'
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 1p <<<"$output" | cut -d. -f1)" = v24 ]
+  contains "$output" /usr/local/bin/pnpm
+  contains "$output" /usr/local/bin/yarn
+  contains "$output" "cache=/home/claudeuser/.cache/npm"
+}
+
+@test "node runs a project script, and npm i -g works unprivileged" {
+  echo '{"name":"t","private":true,"scripts":{"hello":"node -e \"console.log(40 + 2)\""}}' > "$PROJ/package.json"
+  jail sh -c 'npm run --silent hello && npm prefix -g'
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 1p <<<"$output")" = 42 ]
+  [ "$(sed -n 2p <<<"$output")" = /home/claudeuser/.local ]
+}
+
+@test "personal skills are readable, read-only, at ~/.claude/skills" {
+  local skills; skills="$(dirname "$DEV_PROJECTS")/skills"
+  mkdir -p "$skills/demo"
+  echo '# demo' > "$skills/demo/SKILL.md"
+  export JAIL_PERSONAL_SKILLS_DIR="$skills"
+  jail sh -c 'cat ~/.claude/skills/demo/SKILL.md && touch ~/.claude/skills/demo/planted'
+  [ "$status" -ne 0 ]
+  contains "$output" "# demo"
+  [ ! -e "$skills/demo/planted" ]
+
+  # The rest of ~/.claude is still the writable volume.
+  jail sh -c 'touch ~/.claude/still-writable'
+  [ "$status" -eq 0 ]
 }
 
 @test "two jails write to the same project at the same time" {

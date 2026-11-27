@@ -1,5 +1,5 @@
 # =============================================================================
-# Hardened container for Claude Code (Go development).
+# Hardened container for Claude Code (Go and Node development).
 #
 # IMPORTANT note about the UID:
 #   The image pins claudeuser = UID 1000. You do NOT need to rebuild even if
@@ -8,8 +8,13 @@
 #   Leave USER_ID/GROUP_ID at 1000 unless you know what you are doing.
 # =============================================================================
 
-# 1. Official Go image, used only as a source to copy the toolchain from
+# 1. Official Go and Node images, used only as sources to copy the toolchains
+#    from. Keep the Node major the same as in devcontainers/react and
+#    devcontainers/vue: the jail runs the tests against the node_modules the
+#    dev container installed, and native modules only load on the Node ABI
+#    they were built for.
 FROM docker.io/library/golang:1.27-bookworm AS go-source
+FROM docker.io/library/node:24-bookworm AS node-source
 
 # 2. Ubuntu base
 FROM docker.io/library/ubuntu:24.04
@@ -17,10 +22,25 @@ FROM docker.io/library/ubuntu:24.04
 # Copy Go across from the source image
 COPY --from=go-source /usr/local/go /usr/local/go
 
+# Node: the binary, the bundled npm and corepack, and the headers node-gyp
+# compiles native modules against (without them it downloads them).
+COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node-source /usr/local/include/node /usr/local/include/node
+
 # Environment so that 'go' is always on PATH
 ENV PATH="/usr/local/go/bin:/home/claudeuser/go/bin:${PATH}"
 ENV GOPATH="/home/claudeuser/go"
 ENV GOCACHE="/home/claudeuser/.cache/go-build"
+
+# npm's cache goes in ~/.cache, which is the persistent 'claude-gocache'
+# volume, so it survives --rm like the Go build cache. Global installs
+# ('npm i -g') go to ~/.local (bin/ is on PATH) instead of the root-owned
+# /usr/local, and are lost on exit like anything else outside the volumes.
+# corepack keeps pnpm and yarn in ~/.cache/node/corepack, persisted too.
+ENV NPM_CONFIG_CACHE="/home/claudeuser/.cache/npm"
+ENV NPM_CONFIG_PREFIX="/home/claudeuser/.local"
+ENV NPM_CONFIG_UPDATE_NOTIFIER="false"
 
 # The binary is baked into the image and updated with 'make update-claude';
 # an in-container update would be thrown away by --rm anyway.
@@ -30,13 +50,25 @@ ENV DISABLE_AUTOUPDATER=1
 # image layer and is lost on every run.
 ENV CLAUDE_CONFIG_DIR="/home/claudeuser/.claude"
 
-# Essentials + build toolchain for Go packages that need CGO
+# Essentials + build toolchain for Go packages that need CGO. python3 is for
+# node-gyp, which native npm modules shell out to.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ca-certificates \
     procps \
     build-essential \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
+
+# npm, npx and corepack are symlinks into node_modules in the node image. They
+# are recreated here rather than copied, because a copied launcher script no
+# longer finds its own modules. 'corepack enable' adds the pnpm and yarn shims
+# next to them (as root, before the switch to claudeuser).
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack && \
+    corepack enable && \
+    node --version && npm --version
 
 # UID 1000 user (see the header note)
 ARG USER_ID=1000
@@ -51,7 +83,7 @@ WORKDIR /home/claudeuser
 # 'tmp' and '.config' matter here: the launcher exports
 # TMPDIR=/home/claudeuser/tmp, and when that directory did not exist a lot of
 # tools (git, compilers, anything using temp files) failed.
-RUN mkdir -p .local/bin .claude project .cache/go-build go/bin tmp .config
+RUN mkdir -p .local/bin .claude project .cache/go-build .cache/npm go/bin tmp .config
 
 # Inject the Claude binary
 COPY --chown=claudeuser:claude-group claude-bin .local/bin/claude

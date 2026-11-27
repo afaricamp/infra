@@ -3,7 +3,9 @@
 # The IDE backend installs itself here at runtime; this image only provides the
 # toolchain and the bare minimum JetBrains needs.
 #
-# Change the Node tag (24 -> 26, etc.) as needed. Use the full bookworm image,
+# Change the Node tag (24 -> 26, etc.) as needed, together with
+# devcontainers/vue and claude-jail/Containerfile: the jail runs the tests
+# against the node_modules installed here. Use the full bookworm image,
 # not -slim or -alpine: the JetBrains backend needs glibc, and the full image
 # already carries build-essential via buildpack-deps (node-gyp needs it).
 #

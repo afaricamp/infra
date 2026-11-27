@@ -128,6 +128,10 @@ jail_check_volumes() {
 #                  host; this also means 'git config'/'git remote add' fail in
 #                  the jail.
 #   .envrc         direnv runs it on the host.
+#   .claude/settings.json
+#                  Claude Code on the HOST runs the hooks, statusLine and
+#                  apiKeyHelper commands it declares, if you also open the
+#                  project with Claude outside the jail.
 # Only paths that exist at launch can be overmounted: anything Claude creates
 # later (e.g. a 'git init' in a project that had no .git) is not covered.
 # JAIL_RO_PATHS overrides the list (space separated, relative to the project).
@@ -138,7 +142,7 @@ jail_check_volumes() {
 # whole tree for one container only: whichever starts last would cut the
 # others off mid-session with 'Permission denied'. A project left with a
 # private label by an older version is fixed by the next launch.
-JAIL_RO_PATHS="${JAIL_RO_PATHS:-.devcontainer .git/hooks .git/config .envrc}"
+JAIL_RO_PATHS="${JAIL_RO_PATHS:-.devcontainer .git/hooks .git/config .envrc .claude/settings.json}"
 
 jail_project_flags() {
   local here p
@@ -207,6 +211,26 @@ if [ -n "$JAIL_PLUGIN_DIR" ] && [ -d "$JAIL_PLUGIN_DIR" ]; then
     -v "$JAIL_PLUGIN_DIR":/opt/devkit:ro,z
     -e CLAUDE_CODE_PLUGIN_DIRS=/opt/devkit
   )
+fi
+
+# --- Personal skills, read-only ---
+# Your own skills, loaded as on the host: ~/.claude/skills, no prefix.
+# 'make personal-skills' copies them into <repo>/personal-skills (gitignored),
+# a path the podman machine shares on macOS; ~/.claude itself is never
+# mounted, it holds your host credentials. Read-only for the same reason as
+# devkit. Mounted over the claude-home volume, so a skills/ folder inside that
+# volume is hidden while this is in place.
+# JAIL_PERSONAL_SKILLS_DIR=<dir> picks another directory, empty leaves it out.
+JAIL_PERSONAL_SKILLS_DIR="${JAIL_PERSONAL_SKILLS_DIR-$JAIL_INFRA/personal-skills}"
+if [ -n "$JAIL_PERSONAL_SKILLS_DIR" ] && [ -d "$JAIL_PERSONAL_SKILLS_DIR" ]; then
+  # :z relabels the directory recursively, and the mount exposes all of it.
+  case "$(readlink -f "$JAIL_PERSONAL_SKILLS_DIR")" in
+    /|"$(readlink -f "$HOME")"|"$(readlink -f "$HOME")/.claude")
+      jail_die "JAIL_PERSONAL_SKILLS_DIR cannot be /, \$HOME or ~/.claude ($JAIL_PERSONAL_SKILLS_DIR)." \
+        "Point it at a folder that only holds skills, or run 'make personal-skills'." ;;
+  esac
+  # shellcheck disable=SC2054
+  JAIL_FLAGS+=(-v "$JAIL_PERSONAL_SKILLS_DIR":/home/claudeuser/.claude/skills:ro,z)
 fi
 
 # Each launcher runs jail_guard, jail_check_volumes and jail_project_flags,

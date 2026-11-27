@@ -13,6 +13,9 @@ export JAIL_PROXY_IMAGE="localhost/claudetest-egress-proxy:latest"
 export JAIL_NET_INTERNAL="claudetest-internal"
 export JAIL_NET_EGRESS="claudetest-egress"
 TEST_VOLUMES=(claudetest-home claudetest-gopath claudetest-gocache)
+# Your own personal-skills/ folder is never mounted into a test jail; the
+# test that needs one points this at its own.
+export JAIL_PERSONAL_SKILLS_DIR=""
 
 require_podman() {
   command -v podman >/dev/null || skip "podman not installed"

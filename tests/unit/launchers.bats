@@ -71,6 +71,19 @@ launch_jailed() { run bash -c 'cd "$1" && shift && "$@"' _ "${DIR:-$PROJ}" "$REP
   has_pair "$(run_args)" -e CLAUDE_CODE_PLUGIN_DIRS=/opt/devkit
 }
 
+@test "claude-jail and claude-jailed: mount personal skills read-only" {
+  mkdir -p "$BATS_TEST_TMPDIR/skills/demo"
+  export JAIL_PERSONAL_SKILLS_DIR="$BATS_TEST_TMPDIR/skills"
+  launch
+  [ "$status" -eq 0 ]
+  has_pair "$(run_args)" -v "$BATS_TEST_TMPDIR/skills:/home/claudeuser/.claude/skills:ro,z"
+
+  export STUB_PROXY_RUNNING=true
+  launch_jailed
+  [ "$status" -eq 0 ]
+  has_pair "$(run_args)" -v "$BATS_TEST_TMPDIR/skills:/home/claudeuser/.claude/skills:ro,z"
+}
+
 @test "claude-jail: refuses outside DEV_PROJECTS without starting anything" {
   DIR="$BATS_TEST_TMPDIR" launch
   [ "$status" -eq 1 ]

@@ -1,13 +1,13 @@
 ---
 name: building-components
-description: Plans and then builds a React component, screen or custom hook - props API, data source, loading, empty and error states, accessibility and tests - stopping for approval of the plan before writing code. Use it when someone asks to create, add, build or change a component, page, screen, form, modal, table or hook in a React project. Do not use it to only style an existing component or to explain how a component works.
+description: Plans and then builds a React or Vue component, screen, custom hook or composable - props API, data source, loading, empty and error states, accessibility and tests - stopping for approval of the plan before writing code. Use it when someone asks to create, add, build or change a component, page, screen, form, modal, table, hook or composable in a React, Vue or Nuxt project. Do not use it to only style an existing component or to explain how a component works.
 ---
 
 # Building components
 
 ## Before you start
 
-- Read the project's rules and load `devkit:writing-react`.
+- Read the project's rules and load the conventions skill for the stack in `package.json`: `devkit:writing-react` for `react`, `devkit:writing-vue` for `vue` or `nuxt`.
 - Find the closest existing component of the same kind (a form, a table, a page) and the shared pieces it uses: design system components, data fetching hooks, form helpers, routing. Reuse them; do not build a second button or a second fetch wrapper.
 - If there is a design (Figma link, screenshot), ask for it when the request mentions one and none was given.
 
@@ -28,10 +28,10 @@ description: Plans and then builds a React component, screen or custom hook - pr
 File paths, the route if it is a screen, the existing component it follows.
 
 ## API
-Props with types and defaults. Callbacks it calls. What it renders as children.
+Props with types and defaults. Callbacks or events it emits. What it renders as children or slots.
 
 ## Data
-Where the data comes from (query, loader, props), what it sends and when, cache invalidation after mutations.
+Where the data comes from (query, loader, composable, props), what it sends and when, cache invalidation after mutations.
 
 ## States
 Loading, empty, error, success, and pending while submitting. What each looks like.
@@ -56,9 +56,9 @@ Send the plan and wait. Create or edit nothing until the user approves, unless t
 
 ### 3. Build it
 
-Follow the plan, the project's patterns and `devkit:writing-react`. Write the tests with `devkit:writing-tests`. If the plan turns out wrong, stop and say so before changing course.
+Follow the plan, the project's patterns and the conventions skill you loaded. Write the tests with `devkit:writing-tests`. If the plan turns out wrong, stop and say so before changing course.
 
-If the dev server can run (`pnpm dev`, port 5173 in the React dev container), say the user can check it in the browser; inside the jail you cannot open it yourself.
+If the dev server can run (`pnpm dev`: port 5173 for Vite in the React and Vue dev containers, 3000 for Nuxt), say the user can check it in the browser; inside the jail you cannot open it yourself.
 
 ### 4. Run the checks
 
@@ -72,6 +72,6 @@ Files changed, checks that passed and did not run, and the states or questions t
 
 - Only the success state.
 - A new generic component that duplicates one from the design system.
-- Fetching in `useEffect`.
+- Fetching in `useEffect` (React) or `onMounted` (Vue).
 - Props that pass a whole API object instead of what the component uses.
 - Tests that check internal state instead of what the user sees.

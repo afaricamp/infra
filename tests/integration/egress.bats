@@ -76,3 +76,16 @@ via_proxy() {
   via_proxy api.anthropic.com:443
   contains "$output" " 200 "
 }
+
+@test "npm reaches the registry only with the development allowlist" {
+  # Strict allowlist: the proxy refuses registry.npmjs.org.
+  jail_jailed npm view --fetch-retries=0 vue version
+  [ "$status" -ne 0 ]
+
+  # The development allowlist (make egress-dev) lets npm through the proxy.
+  ALLOW_DEV=1 "$REPO/claude-jail/egress-hardening/setup-egress.sh" >/dev/null
+  jail_jailed npm view --fetch-retries=0 vue version
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [[ "$(tail -n 1 <<<"$output")" =~ ^3\. ]]
+}

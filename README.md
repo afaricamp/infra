@@ -33,10 +33,12 @@ Infrastructure for running **Claude Code** and the **JetBrains IDEs** (GoLand, P
 │   ├── .claude-plugin/plugin.json
 │   ├── skills/<name>/SKILL.md
 │   └── evals/<skill>/<case>/
+├── personal-skills/            # your own skills for the jail, from 'make personal-skills'; gitignored
 ├── devcontainers/
 │   ├── go/{Containerfile, devcontainer.json}
 │   ├── php/{Containerfile, devcontainer.json}
-│   └── react/{Containerfile, devcontainer.json}
+│   ├── react/{Containerfile, devcontainer.json}
+│   └── vue/{Containerfile, devcontainer.json}
 ├── tests/                      # see "Tests"
 │   ├── Containerfile           # bats runner for the unit tests
 │   ├── static/policy.sh        # level 1: repo policies
@@ -54,7 +56,7 @@ The Claude binary (a few hundred MB) is not versioned: it is in `.gitignore`.
 ```bash
 cd <repo>
 make podman-setup      # once; Linux: asks for sudo (linger). macOS: creates/starts the podman machine
-make all               # download Claude + build the 4 images + install aliases
+make all               # download Claude + build the 5 images + install aliases
 source ~/.bashrc       # load the aliases (~/.zshrc with zsh, the macOS default)
 make verify            # sanity check
 ```
@@ -73,13 +75,14 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make download-claude` | Download the Claude binary **without touching the host**, and **only if missing** |
 | `make force-download-claude` | Re-download the binary even if it is already there |
 | `make update-claude` | `force-download-claude` + `build-claude` |
-| `make build` | Build all four images |
-| `make build-claude` / `build-go` / `build-php` / `build-react` | Build a single image |
+| `make build` | Build all five images |
+| `make build-claude` / `build-go` / `build-php` / `build-react` / `build-vue` | Build a single image |
 | `make egress` | Egress proxy with the **strict** allowlist (Anthropic only) |
 | `make egress-dev` | Same, but also allowing Go modules, GitHub and npm |
 | `make aliases` | Copy `dev.sh` and hook it into `~/.bashrc` |
-| `make devcontainer PROJECT=<path> TYPE=go\|php\|react` | Copy the `devcontainer.json` into the given project (`FORCE=1` to overwrite an existing one) |
+| `make devcontainer PROJECT=<path> TYPE=go\|php\|react\|vue` | Copy the `devcontainer.json` into the given project (`FORCE=1` to overwrite an existing one) |
 | `make ai-sessions PROJECT=<path>` | Add `.ai-sessions/` (local AI session notes, gitignored except its README) to a project. `newproj-*` does it for you; `FORCE=1` replaces the README with the current template |
+| `make personal-skills [SRC=<dir>]` | Copy your own Claude skills (`~/.claude/skills` by default) to `personal-skills/`, which the jail loads read-only (see [Skills](#skills)) |
 | `make fix-volumes` | Repair ownership and SELinux labels of the Claude volumes (see [Troubleshooting](#troubleshooting)) |
 | `make verify` | Check binary, images, socket, aliases, egress and DNS leaks |
 | `make lint` | shellcheck + hadolint, run in containers |
@@ -113,16 +116,18 @@ Arguments go straight to Claude: `claude-jail --resume`, `claude-jailed -p "expl
 |---|---|---|---|
 | Talk to Claude | yes | yes | yes |
 | Read/edit the project | yes | yes | yes |
-| `go mod download`, `git clone`, `npx` | yes | **no** | yes |
+| `go mod download`, `git clone`, `npm install`, `npx` | yes | **no** | yes |
 | Direct route to the internet | yes | no | no |
 
-The jail image ships the Go toolchain, so strict mode is fine for conversing and editing but **not for building**: without `proxy.golang.org` and `github.com` on the allowlist, `go mod download` and `git clone` fail. If you need to build inside the jail, start the proxy with `make egress-dev` (see the security trade-off documented in `allowlist-dev`).
+The jail image ships the Go toolchain and Node 24 (npm, plus pnpm and yarn through corepack), so Claude can run the type checks, linters and tests of Go, React and Vue projects. Strict mode is fine for conversing and editing but **not for building**: without `proxy.golang.org`, `github.com` and `registry.npmjs.org` on the allowlist, `go mod download`, `git clone`, `npm install` and corepack's first download of pnpm fail. If you need to build inside the jail, start the proxy with `make egress-dev` (see the security trade-off documented in `allowlist-dev`).
+
+For Node projects, install the dependencies in the dev container (see the security note on lifecycle scripts) and let Claude use that `node_modules`: the project directory is shared, and the jail and the dev containers run the same Node major, so native modules load in both. Keep the three `node:` tags in step when you change one. npm's cache lives in `~/.cache/npm`, inside the `claude-gocache` volume, so it survives between sessions like the Go build cache.
 
 **IDE (Tier 1, backend in a container):**
 
 ```bash
 # create a project with its devcontainer already wired up
-newproj-go my-service           # or: newproj-php my-api, newproj-react my-ui
+newproj-go my-service           # or: newproj-php my-api, newproj-react my-ui, newproj-vue my-web
 # (equivalent to: make devcontainer PROJECT=$DEV_PROJECTS/my-service TYPE=go)
 ```
 
@@ -133,25 +138,41 @@ Then in **Gateway → Dev Containers → New Dev Container**, point it at `$DEV_
 | `go` | `golang:1.27-bookworm` | GoLand | 16g | CGO toolchain included |
 | `php` | `php:8.4-cli-bookworm` | PhpStorm | 8g | Composer from its official image |
 | `react` | `node:24-bookworm` | WebStorm | 8g | pnpm/yarn via corepack; ports 5173 and 3000 forwarded |
+| `vue` | `node:24-bookworm` | WebStorm | 8g | Same toolchain as `react`; ports 5173 (Vite) and 3000 (Nuxt) forwarded |
 
-All three images run as a `dev` user pinned to UID 1000, like the Claude jail; `--userns=keep-id:uid=1000` maps your host user onto it, so your host UID does not matter and the images are built without `--build-arg`.
+All four images run as a `dev` user pinned to UID 1000, like the Claude jail; `--userns=keep-id:uid=1000` maps your host user onto it, so your host UID does not matter and the images are built without `--build-arg`.
 
-The React container raises `--pids-limit` to 4096, because Node tooling (Vite, webpack, jest, tsc) forks a lot more than the Go and PHP toolchains do.
+The React and Vue containers raise `--pids-limit` to 4096, because Node tooling (Vite, webpack, Vitest, tsc, vue-tsc) forks a lot more than the Go and PHP toolchains do. Their Containerfiles are the same apart from the comments; `vue` is a separate type so a Vue project gets its own image, ports and `newproj-vue`.
 
-If a dev server is not reachable from the host, the cause is almost always one of two things: Gateway's `forwardPorts` handling over Podman is patchy (add an explicit `"-p=5173:5173"` to `runArgs`), or the dev server is bound to `127.0.0.1` inside the container and needs `--host` (Vite) to listen on `0.0.0.0`.
+If a dev server is not reachable from the host, the cause is almost always one of two things: Gateway's `forwardPorts` handling over Podman is patchy (add an explicit `"-p=5173:5173"` to `runArgs`), or the dev server is bound to `127.0.0.1` inside the container and needs `--host` (Vite) or `--host 0.0.0.0` (Nuxt) to listen on all interfaces.
 
 ## Skills
 
 Both launchers mount [`devkit/`](devkit/README.md) read-only into the jail and load it as a plugin (`CLAUDE_CODE_PLUGIN_DIRS`), so every project gets the same skills as `/devkit:<skill>`:
 
 - **Workflow**, run by hand only: `/devkit:starting-features`, `/devkit:committing-changes`, `/devkit:creating-tickets`. `tracking-sessions` keeps each task's notes in the project's `.ai-sessions/` (gitignored except its README), so a new chat can resume where the last one stopped. `newproj-*` creates that folder; `make ai-sessions PROJECT=<path>` adds it to an existing project. This repository has its own [.ai-sessions/](.ai-sessions/README.md) for work on infra.
-- **Conventions** for Go, PHP, React, Containerfiles, shell scripts, GitHub Actions and Kubernetes manifests. They load on their own when Claude works on matching files.
+- **Conventions** for Go, PHP, React, Vue (and Nuxt), Containerfiles, shell scripts, GitHub Actions and Kubernetes manifests. They load on their own when Claude works on matching files.
 - **Writing**: `writing-naturally` (plain, specific prose without AI writing patterns, used for PR descriptions, tickets and docs) and `detecting-ai-text`, both in English and Spanish.
 - **Tasks** that use them: `implementing-endpoints`, `building-components`, `writing-tests`, `finding-test-gaps`, `reviewing-code`, `writing-documentation`, `hardening-security` (threat model, checklist and fixes proven by tests) and `optimizing-performance` (measure, profile, prove the gain). `reviewing-code` uses both for its security and performance passes. For a full security scan of a codebase, Anthropic's `claude-security` plugin is the better tool; install it inside the jail with `/plugin install claude-security@claude-plugins-official` (needs `claude-jail`, not the strict proxy).
 
 They are defaults. Each skill tells Claude to follow the project's own `CLAUDE.md`, guidelines and linter config first, and a project skill with the same name keeps its bare `/name`, because plugin skills are namespaced.
 
 The mount is read-only so Claude cannot change the skills it runs with: an injection in one project cannot plant instructions that load in every later session. Edit them on the host; the next jail picks them up. `JAIL_PLUGIN_DIR=<dir>` loads another plugin directory, `JAIL_PLUGIN_DIR=` none. How to write or change a skill, and how to run its evals: [devkit/README.md](devkit/README.md).
+
+### Your own skills
+
+The jail has its own `~/.claude` (the `claude-home` volume), so the skills you use on the host are not there. To bring them in:
+
+```bash
+make personal-skills                    # copies ~/.claude/skills
+make personal-skills SRC=~/my-skills    # or any folder of <name>/SKILL.md
+```
+
+It copies them to `personal-skills/` in this repo (gitignored), and both launchers mount that folder **read-only** over `~/.claude/skills`, so they load as personal skills, with their bare `/name`, as on the host. Run it again after changing them; the next jail picks up the new copy.
+
+It is a copy and not a mount of the original for three reasons: on macOS the podman machine only shares `$DEV_PROJECTS` and this repo, and sharing `~/.claude` would also hand the VM your host credentials; symlinks are resolved on the host instead of breaking inside the container; and on Linux only the copy gets relabelled by `:z`. The target only replaces a folder it created itself.
+
+Read-only for the same reason as the devkit mount. `JAIL_PERSONAL_SKILLS_DIR=<dir>` mounts another folder (on macOS it has to be on a path the machine shares; the launchers refuse `/`, `$HOME` and `~/.claude`), `JAIL_PERSONAL_SKILLS_DIR=` none. Personal skills replace project skills with the same name, as they do on the host. Plugins and mods with hooks are not loaded this way.
 
 ## Updating Claude
 
@@ -164,7 +185,7 @@ make update-claude     # re-download the binary and rebuild the image
 ## Security notes (read them)
 
 - **The binary is downloaded without installing anything on the host.** `download-claude` runs the official installer inside an ephemeral Ubuntu container and extracts only the binary. This avoids a direct `curl | bash` on your machine and the background updater. The installer is served from `claude.ai` over HTTPS (the official channel); even so, you are welcome to review `https://claude.ai/install.sh` first.
-- **The project directory is the shared boundary, and the host reads it too.** The Claude jail and the JetBrains dev container mount the same `$DEV_PROJECTS/<project>`. Most of what Claude writes there runs inside the dev container, but some files in a project are executed **on the host**: `.devcontainer/devcontainer.json` (Gateway applies its `runArgs`, so `--privileged` or a mount of your home would get you a container with no isolation; and the dev container spec runs `initializeCommand` on the host), `.git/hooks/*` and `.git/config` (`core.fsmonitor`, `core.hooksPath` and aliases run when you use git on the host), and `.envrc` if you use direnv. The launchers mount those paths **read-only** inside the jail (override the list with `JAIL_RO_PATHS`). Two gaps remain: a path that does not exist when you launch cannot be protected (if a project has no `.git` and Claude runs `git init`, review `.git/hooks` and `.git/config` before using git on the host), and anything you run yourself on the host from the project (`make`, `npm run`, scripts) is code Claude could have edited. Keep one directory per project to limit the blast radius.
+- **The project directory is the shared boundary, and the host reads it too.** The Claude jail and the JetBrains dev container mount the same `$DEV_PROJECTS/<project>`. Most of what Claude writes there runs inside the dev container, but some files in a project are executed **on the host**: `.devcontainer/devcontainer.json` (Gateway applies its `runArgs`, so `--privileged` or a mount of your home would get you a container with no isolation; and the dev container spec runs `initializeCommand` on the host), `.git/hooks/*` and `.git/config` (`core.fsmonitor`, `core.hooksPath` and aliases run when you use git on the host), `.envrc` if you use direnv, and `.claude/settings.json` if you also run Claude Code on the host in that project (its hooks, `statusLine` and `apiKeyHelper` are commands). The launchers mount those paths **read-only** inside the jail (override the list with `JAIL_RO_PATHS`). Three gaps remain: a path that does not exist when you launch cannot be protected (if a project has no `.git` and Claude runs `git init`, review `.git/hooks` and `.git/config` before using git on the host); `.claude/settings.local.json` and `.mcp.json` run commands on the host in the same way but stay writable, because Claude writes `settings.local.json` when you allow a command for good and a read-only file would break that (review them before opening the project with Claude on the host); and anything you run yourself on the host from the project (`make`, `npm run`, scripts) is code Claude could have edited. Keep one directory per project to limit the blast radius.
 - **Read-only `.git/config` inside the jail** means `git config`, `git remote add` or `git branch -u` fail there. Do those on the host.
 - **`--userns=keep-id` in the `devcontainer.json` files** is the least certain part: it guarantees files come out owned by your user, but the JetBrains Podman integration has rough edges. If a dev container will not start, or files end up with odd ownership, that line is the first thing to check.
 - **Dev container network egress.** It runs with a normal network because it needs to download Go modules, Composer packages and npm packages. The Claude jail is the one that can be restricted to Anthropic only, with `make egress`.
@@ -175,6 +196,30 @@ make update-claude     # re-download the binary and rebuild the image
 - **The egress allowlist filters by hostname, not by IP.** It is a reasonable exfiltration control, not a guarantee: it does not inspect the contents of the TLS tunnel (it is `CONNECT`, not MITM), so any permitted domain remains a possible channel out. It also cannot see DNS, so `jail-internal` is created with DNS turned off (`--disable-dns`): older aardvark-dns versions forward queries from internal networks, which would be a second (slow, but real) channel out. The jail finds the proxy through an `/etc/hosts` entry the launcher adds. `make egress` recreates a `jail-internal` left with DNS on by an older setup, and `make verify` still checks that outside names do not resolve.
 - **The normal-network mode (`claude-jail`) can reach your LAN** and, depending on the podman network backend, services on the host. Use `claude-jailed` for anything you do not trust.
 
+## Compared with Claude Code's own isolation
+
+Claude Code ships its own sandbox, and Anthropic publishes a reference dev container. The jail does not replace either; this is how they differ, based on [Claude Code's documentation](https://code.claude.com/docs/en/sandbox-environments.md) as of November 2026.
+
+| | Built-in sandbox (`/sandbox`) | Reference dev container | This jail |
+|---|---|---|---|
+| What it isolates | Bash commands and the processes they start. Claude's file tools, MCP servers, hooks and the status line run outside it | The whole Claude process | The whole Claude process, including its tools, hooks, MCP servers and plugins |
+| What it can read | Most of the machine by default, `~/.ssh` and `~/.aws/credentials` included; narrowed with `denyRead` | What you mount into it | The project and its own volumes. Your home is never mounted, and on macOS the VM only shares `$DEV_PROJECTS` and this repo |
+| What it can write | The working directory, a temp directory and directories you add | The mounted workspace | The project |
+| Project files your host runs later | Protects `.claude` settings, `.mcp.json`, shell startup files and `~/.claude` | Not covered | Read-only: `.devcontainer`, `.git/hooks`, `.git/config`, `.envrc`, `.claude/settings.json`. Not yet `.mcp.json` or `.claude/settings.local.json` (see [Security notes](#security-notes-read-them)) |
+| Network | A local proxy with a domain allowlist that starts empty; new domains prompt or are refused depending on the permission mode | A default-deny iptables firewall (needs `NET_ADMIN` and `NET_RAW`) | Normal network with `claude-jail`; with `claude-jailed`, a hostname allowlist on port 443 only, no direct route and no DNS |
+| Your host credentials | Readable unless you deny them | Absent unless you mount them | Absent |
+| Ways out from inside a session | Claude can retry a command unsandboxed (`dangerouslyDisableSandbox`, with your approval depending on the mode); `excludedCommands` and `!` commands run outside | None | None |
+| Setup | Nothing on macOS; `bubblewrap` and `socat` on Linux; off until you enable it | Docker and the dev container files | Podman (and a podman machine on macOS), the images, and Gateway for the IDEs |
+| What you give up | Nothing | Host credentials and tools you do not mount | `git push` with your credentials, MCP servers running on the host, the desktop app and IDE extensions: the jail covers the CLI only |
+
+Two more options from the same docs: the sandbox runtime (`srt claude`) wraps the whole Claude process like the jail does, but is a beta research preview; and Claude Code on the web runs each session in a VM that Anthropic manages.
+
+Which one to use:
+
+- **The built-in sandbox** is the sensible default for projects you mostly trust: nothing to install, and your editor and host tools keep working. Deny reads of your credential files, since the defaults allow them.
+- **The jail** is for projects you do not trust, or for running without permission prompts: the agent never sees your home directory, and it cannot decide to run something outside the container.
+- **They could stack, but not yet here.** Anthropic recommends the sandbox as an extra layer inside a container. The jail image does not ship `bubblewrap` or `socat`, so the built-in sandbox cannot be turned on inside it, and anything that requires it refuses to run: `claude plugin eval`, for example, will not grant Bash to an eval case. Adding them is untested: bubblewrap in an unprivileged container needs `enableWeakerNestedSandbox`, and the docs do not say whether rootless Podman works with it.
+
 ## Tests
 
 Three levels, from cheap to thorough. CI runs all of them on every push (`.github/workflows/tests.yml`).
@@ -182,8 +227,8 @@ Three levels, from cheap to thorough. CI runs all of them on every push (`.githu
 | Level | Command | Needs | What it covers |
 |---|---|---|---|
 | 1. Static | `make test-static` | podman (or `ENGINE=docker`), python3 | shellcheck, hadolint, and repo policies: fully qualified base images, every `devcontainer.json` parses and keeps its hardening flags and installs nothing automatically, every `make` target the README lists exists, the devkit skills follow `devkit/README.md` |
-| 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers, `setup-egress.sh`, the Makefile targets (`devcontainer`, `aliases`, `verify`, `fix-volumes`) and `dev.sh` |
-| 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits, read-only host-executed paths, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak) and each dev container run with its own `devcontainer.json` |
+| 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers, `setup-egress.sh`, the personal skills mount, the Makefile targets (`devcontainer`, `ai-sessions`, `personal-skills`, `aliases`, `verify`, `fix-volumes`) and `dev.sh` |
+| 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits, read-only host-executed paths and personal skills, Node and npm inside the jail, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak) and each dev container run with its own `devcontainer.json` |
 
 `make test` runs levels 1 and 2 and works anywhere with podman, macOS included (`ENGINE=docker` also works for these two levels). `make test-unit BATS=bats` uses a local bats instead of the container; on a Mac, `env PATH=/usr/bin:/bin:/usr/sbin:/sbin "$(command -v bats)" tests/unit` runs them with the stock macOS tools, as CI does.
 

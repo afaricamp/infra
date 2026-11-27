@@ -36,12 +36,12 @@ setup() {
 @test "devcontainer: rejects an unknown TYPE and lists the valid ones" {
   run make_repo devcontainer PROJECT="$P" TYPE=rust
   [ "$status" -ne 0 ]
-  contains "$output" "unknown TYPE 'rust'. Available: go php react"
+  contains "$output" "unknown TYPE 'rust'. Available: go php react vue"
   [ ! -e "$P" ]
 }
 
 @test "devcontainer: copies the template for each type" {
-  for t in go php react; do
+  for t in go php react vue; do
     run make_repo devcontainer PROJECT="$P-$t" TYPE="$t"
     [ "$status" -eq 0 ]
     cmp "$REPO/devcontainers/$t/devcontainer.json" "$P-$t/.devcontainer/devcontainer.json"
@@ -113,12 +113,83 @@ setup() {
   cmp "$REPO/devkit/templates/ai-sessions/README.md" "$P/.ai-sessions/README.md"
 }
 
+# --- personal-skills ---------------------------------------------------------------
+
+# skills_src DIR: a folder with two skills, one of them through a symlink.
+skills_src() {
+  mkdir -p "$1/alpha" "$BATS_TEST_TMPDIR/elsewhere/beta"
+  echo '# alpha' > "$1/alpha/SKILL.md"
+  echo '# beta' > "$BATS_TEST_TMPDIR/elsewhere/beta/SKILL.md"
+  ln -s "$BATS_TEST_TMPDIR/elsewhere/beta" "$1/beta"
+}
+
+@test "personal-skills: copies ~/.claude/skills, resolving symlinks, and marks the copy" {
+  skills_src "$HOME/.claude/skills"
+  export JAIL_PERSONAL_SKILLS_DIR="$BATS_TEST_TMPDIR/personal-skills"
+  run make_repo personal-skills
+  [ "$status" -eq 0 ]
+  contains "$output" "2 skills copied"
+  [ -f "$JAIL_PERSONAL_SKILLS_DIR/alpha/SKILL.md" ]
+  [ -f "$JAIL_PERSONAL_SKILLS_DIR/beta/SKILL.md" ]
+  [ ! -L "$JAIL_PERSONAL_SKILLS_DIR/beta" ]
+  [ -f "$JAIL_PERSONAL_SKILLS_DIR/.personal-skills" ]
+}
+
+@test "personal-skills: SRC picks the folder, and a second run drops deleted skills" {
+  skills_src "$BATS_TEST_TMPDIR/mine"
+  export JAIL_PERSONAL_SKILLS_DIR="$BATS_TEST_TMPDIR/personal-skills"
+  make_repo personal-skills SRC="$BATS_TEST_TMPDIR/mine" >/dev/null
+  rm "$BATS_TEST_TMPDIR/mine/beta"
+  run make_repo personal-skills SRC="$BATS_TEST_TMPDIR/mine"
+  [ "$status" -eq 0 ]
+  contains "$output" "1 skills copied"
+  [ -f "$JAIL_PERSONAL_SKILLS_DIR/alpha/SKILL.md" ]
+  [ ! -e "$JAIL_PERSONAL_SKILLS_DIR/beta" ]
+}
+
+@test "personal-skills: never replaces a folder it did not create" {
+  skills_src "$HOME/.claude/skills"
+  export JAIL_PERSONAL_SKILLS_DIR="$BATS_TEST_TMPDIR/precious"
+  mkdir -p "$JAIL_PERSONAL_SKILLS_DIR"
+  echo keep > "$JAIL_PERSONAL_SKILLS_DIR/notes.txt"
+  run make_repo personal-skills
+  [ "$status" -ne 0 ]
+  contains "$output" "was not created by 'make personal-skills'"
+  [ "$(cat "$JAIL_PERSONAL_SKILLS_DIR/notes.txt")" = keep ]
+}
+
+@test "personal-skills: refuses a missing folder, a folder without skills, and copying onto itself" {
+  export JAIL_PERSONAL_SKILLS_DIR="$BATS_TEST_TMPDIR/personal-skills"
+  run make_repo personal-skills SRC="$BATS_TEST_TMPDIR/nope"
+  [ "$status" -ne 0 ]
+  contains "$output" "is not a directory"
+
+  mkdir -p "$BATS_TEST_TMPDIR/empty/not-a-skill"
+  run make_repo personal-skills SRC="$BATS_TEST_TMPDIR/empty"
+  [ "$status" -ne 0 ]
+  contains "$output" "no <name>/SKILL.md"
+  [ ! -e "$JAIL_PERSONAL_SKILLS_DIR" ]
+
+  skills_src "$JAIL_PERSONAL_SKILLS_DIR"
+  run make_repo personal-skills SRC="$JAIL_PERSONAL_SKILLS_DIR"
+  [ "$status" -ne 0 ]
+  contains "$output" "are the same directory"
+  [ -L "$JAIL_PERSONAL_SKILLS_DIR/beta" ]
+}
+
+@test "personal-skills: SRC is a path, never a command" {
+  export JAIL_PERSONAL_SKILLS_DIR="$BATS_TEST_TMPDIR/personal-skills"
+  run make_repo personal-skills SRC="\$(touch $BATS_TEST_TMPDIR/pwned) \$(shell touch $BATS_TEST_TMPDIR/pwned)"
+  [ "$status" -ne 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+}
+
 # --- build ---------------------------------------------------------------------------
 
 @test "build-*: dev container images do not get the host UID (they pin 1000 for keep-id)" {
-  run make_repo -n build-go build-php build-react
+  run make_repo -n build-go build-php build-react build-vue
   [ "$status" -eq 0 ]
-  [ "$(grep -c 'podman build' <<<"$output")" -eq 3 ]
+  [ "$(grep -c 'podman build' <<<"$output")" -eq 4 ]
   not grep -qE 'USER_ID|GROUP_ID' <<<"$output"
 }
 

@@ -15,6 +15,10 @@ claude-jail/egress-hardening/allowlist.effective
 # .claude/settings.json, which is not ignored)
 .claude/settings.local.json
 
+# Your own skills for the jail, copied by 'make personal-skills'
+personal-skills/
+personal-skills.tmp/
+
 # devkit eval runs (claude plugin eval, skill-creator)
 devkit/evals/results/
 *-workspace/

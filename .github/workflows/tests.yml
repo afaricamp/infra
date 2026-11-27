@@ -70,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        type: [go, php, react]
+        type: [go, php, react, vue]
     steps:
       - uses: actions/checkout@v7
       - run: tests/ci/setup-rootless-podman.sh
