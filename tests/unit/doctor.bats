@@ -157,6 +157,24 @@ $REPO"
   has_fix "$output" "make egress (recreates it without DNS)"
 }
 
+@test "doctor: the dependency cache is optional; a stopped one is a warning" {
+  install_aliases
+  export STUB_PROXY_RUNNING=true
+  doctor
+  [ "$status" -eq 0 ]
+  contains "$output" "ok    no dependency cache (optional: make caches"
+
+  export STUB_CACHE_RUNNING=true
+  doctor
+  contains "$output" "ok    dependency cache claude-cache running"
+
+  export STUB_CACHE_RUNNING=false
+  doctor
+  [ "$status" -eq 0 ]
+  contains "$output" "WARN  dependency cache claude-cache is stopped"
+  has_fix "$output" "podman start claude-cache"
+}
+
 @test "doctor: Linux checks cgroups and the network backend instead of the machine" {
   export STUB_CGROUPS=v1 STUB_NET_BACKEND=cni
   OS_UNDER_TEST=Linux doctor

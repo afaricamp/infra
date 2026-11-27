@@ -4,6 +4,8 @@
 #
 # Needed because the jail image ships the Go toolchain: without these domains
 # 'go mod download', 'git clone' and 'npm install' fail inside jailed mode.
+# The dependency cache ('make caches') covers Go modules and npm packages
+# with the strict allowlist; this one is still needed for git.
 #
 # SECURITY TRADE-OFF: every domain here is a potential exfiltration route (a
 # gist, a repo you own, a published package). Only use it when you actually

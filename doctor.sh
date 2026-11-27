@@ -9,7 +9,8 @@
 #
 # Exit status 1 when there is at least one FAIL, 0 otherwise.
 # Run through 'make doctor', which passes the same names the Makefile uses
-# (DEV_PROJECTS, JAIL_IMAGE, JAIL_VOLUME_PREFIX, JAIL_PROXY, JAIL_NET_*).
+# (DEV_PROJECTS, JAIL_IMAGE, JAIL_VOLUME_PREFIX, JAIL_PROXY, JAIL_NET_*,
+# JAIL_CACHE).
 # DOCTOR_OS overrides 'uname -s' (for the tests).
 # =============================================================================
 set -uo pipefail
@@ -20,7 +21,8 @@ DEV_PROJECTS="${DEV_PROJECTS:-$HOME/dev/projects}"
 JAIL_IMAGE="${JAIL_IMAGE:-localhost/claude-jail:latest}"
 JAIL_PROXY="${JAIL_PROXY:-claude-proxy}"
 JAIL_NET_INTERNAL="${JAIL_NET_INTERNAL:-jail-internal}"
-export DEV_PROJECTS JAIL_IMAGE JAIL_PROXY JAIL_NET_INTERNAL
+JAIL_CACHE="${JAIL_CACHE:-claude-cache}"
+export DEV_PROJECTS JAIL_IMAGE JAIL_PROXY JAIL_NET_INTERNAL JAIL_CACHE
 
 fails=0
 warns=0
@@ -177,6 +179,14 @@ else
   if podman network exists "$JAIL_NET_INTERNAL" 2>/dev/null &&
      [ "$(podman network inspect -f '{{.DNSEnabled}}' "$JAIL_NET_INTERNAL" 2>/dev/null)" = true ]; then
     fail "$JAIL_NET_INTERNAL has DNS on: DNS is a way out the proxy never sees" "make egress (recreates it without DNS)"
+  fi
+  if ! podman container exists "$JAIL_CACHE" 2>/dev/null; then
+    ok "no dependency cache (optional: make caches lets go and npm download with the strict allowlist)"
+  elif [ "$(podman container inspect -f '{{.State.Running}}' "$JAIL_CACHE" 2>/dev/null)" = true ]; then
+    ok "dependency cache $JAIL_CACHE running"
+  else
+    warn "dependency cache $JAIL_CACHE is stopped (after a reboot): go and npm downloads go to the proxy" \
+      "podman start $JAIL_CACHE"
   fi
 fi
 

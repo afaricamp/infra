@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# Unit tests for the launchers and setup-egress.sh, against a fake podman that
-# records what it is asked to run.
+# Unit tests for the launchers, setup-egress.sh and setup-caches.sh (with
+# 'make caches'), against a fake podman that records what it is asked to run.
 
 load helpers
 
@@ -222,6 +222,118 @@ launch_jailed() { run bash -c 'cd "$1" && shift && "$@"' _ "${DIR:-$PROJ}" "$REP
   has_pair "$(run_args)" --network n1
   has_pair "$(run_args)" -e HTTPS_PROXY=http://p1:8888
   grep -qx 'container inspect -f {{.State.Running}} p1' "$STUB_LOG"
+}
+
+# --- claude-jailed and the dependency cache -------------------------------------------
+
+@test "claude-jailed: without a dependency cache, no cache settings and only localhost skips the proxy" {
+  export STUB_PROXY_RUNNING=true
+  launch_jailed
+  [ "$status" -eq 0 ]
+  local args; args="$(run_args)"
+  has_pair "$args" -e NO_PROXY=localhost,127.0.0.1
+  has_pair "$args" -e no_proxy=localhost,127.0.0.1
+  not grep -q 'GOPROXY\|npm_config_registry\|claude-cache' <<<"$args"
+  not grep -q 'dependency cache' <<<"$output"
+}
+
+@test "claude-jailed: a running cache gets Go, npm, corepack and yarn, reached without the proxy" {
+  export STUB_PROXY_RUNNING=true STUB_CACHE_RUNNING=true
+  launch_jailed --resume
+  [ "$status" -eq 0 ]
+  local args; args="$(run_args)"
+  has_pair "$args" --add-host claude-cache:10.89.0.3
+  has_pair "$args" -e GOPROXY=http://claude-cache:3000,direct
+  has_pair "$args" -e npm_config_registry=http://claude-cache:4873/
+  has_pair "$args" -e COREPACK_NPM_REGISTRY=http://claude-cache:4873
+  has_pair "$args" -e YARN_NPM_REGISTRY_SERVER=http://claude-cache:4873
+  has_pair "$args" -e YARN_UNSAFE_HTTP_WHITELIST=claude-cache
+  has_pair "$args" -e NO_PROXY=localhost,127.0.0.1,claude-cache
+  has_pair "$args" -e no_proxy=localhost,127.0.0.1,claude-cache
+  # Everything else still goes through the proxy, on the internal network.
+  has_pair "$args" -e HTTPS_PROXY=http://claude-proxy:8888
+  has_pair "$args" --network jail-internal
+  [ "$(tail -n 2 <<<"$args" | paste -sd'|' -)" = "localhost/claude-jail:latest|--resume" ]
+}
+
+@test "claude-jailed: a stopped cache, or one off the internal network, is a note and the jail starts without it" {
+  export STUB_PROXY_RUNNING=true STUB_CACHE_RUNNING=false
+  launch_jailed
+  [ "$status" -eq 0 ]
+  contains "$output" "NOTE: the dependency cache claude-cache is stopped"
+  contains "$output" "podman start claude-cache"
+  not grep -q GOPROXY <<<"$(run_args)"
+
+  export STUB_CACHE_RUNNING=true STUB_CACHE_IP=
+  launch_jailed
+  [ "$status" -eq 0 ]
+  contains "$output" "not on jail-internal"
+  not grep -q GOPROXY <<<"$(run_args)"
+}
+
+@test "claude-jailed: the cache's name follows JAIL_CACHE" {
+  export STUB_PROXY_RUNNING=true STUB_CACHE_RUNNING=true JAIL_CACHE=c1
+  launch_jailed
+  [ "$status" -eq 0 ]
+  has_pair "$(run_args)" --add-host c1:10.89.0.3
+  has_pair "$(run_args)" -e GOPROXY=http://c1:3000,direct
+}
+
+# --- setup-caches.sh, make caches, make caches-down ------------------------------------
+
+@test "setup-caches: refuses without the proxy's networks, and says to run make egress first" {
+  run "$REPO/claude-jail/egress-hardening/setup-caches.sh"
+  [ "$status" -eq 1 ]
+  contains "$output" "network jail-internal does not exist"
+  contains "$output" "make egress"
+  not podman_ran
+}
+
+@test "setup-caches: builds the cache, starts it hardened on the egress network with its volume, then on the internal one" {
+  export STUB_NETWORKS="jail-internal jail-egress"
+  run "$REPO/claude-jail/egress-hardening/setup-caches.sh"
+  [ "$status" -eq 0 ]
+  grep -q '^build -t claude-dep-cache -f Containerfile.cache ' "$STUB_LOG"
+  [ "$(grep -n '^run ' "$STUB_LOG" | cut -d: -f1)" -lt "$(grep -nx 'network connect jail-internal claude-cache' "$STUB_LOG" | cut -d: -f1)" ]
+  local args; args="$(run_args)"
+  has_pair "$args" --name claude-cache
+  has_pair "$args" --network jail-egress
+  has_pair "$args" --cap-drop ALL
+  has_pair "$args" --security-opt no-new-privileges
+  has_pair "$args" --userns keep-id:uid=1000,gid=1000
+  has_line "$args" --read-only
+  has_pair "$args" --memory 512m
+  has_pair "$args" --log-opt max-size=10m
+  has_pair "$args" -v claude-depcache:/var/cache/claude-deps
+  [ "$(tail -n 1 <<<"$args")" = claude-dep-cache ]
+}
+
+@test "make caches: passes the Makefile's names to setup-caches.sh" {
+  export STUB_NETWORKS="n1 e1"
+  run make_repo caches JAIL_NET_INTERNAL=n1 JAIL_NET_EGRESS=e1 JAIL_CACHE=c1 JAIL_CACHE_IMAGE=img2 JAIL_VOLUME_PREFIX=t1
+  [ "$status" -eq 0 ]
+  grep -qx 'network connect n1 c1' "$STUB_LOG"
+  grep -q '^build -t img2 ' "$STUB_LOG"
+  local args; args="$(run_args)"
+  has_pair "$args" --network e1
+  has_pair "$args" -v t1-depcache:/var/cache/claude-deps
+  [ "$(tail -n 1 <<<"$args")" = img2 ]
+}
+
+@test "make caches-down: removes the cache and keeps its downloads; nothing to do without one" {
+  export STUB_CACHE_RUNNING=true
+  run make_repo caches-down
+  [ "$status" -eq 0 ]
+  grep -qx 'rm -f claude-cache' "$STUB_LOG"
+  not grep -q 'volume rm' "$STUB_LOG"
+  contains "$output" "podman volume rm claude-depcache"
+
+  unset STUB_CACHE_RUNNING
+  : > "$STUB_LOG"
+  run make_repo caches-down
+  [ "$status" -eq 0 ]
+  contains "$output" "nothing to stop"
+  not grep -q '^rm ' "$STUB_LOG"
 }
 
 # --- setup-egress.sh ------------------------------------------------------------------

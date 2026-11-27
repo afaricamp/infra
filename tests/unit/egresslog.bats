@@ -34,14 +34,16 @@ section() {
   contains "$output" "last Nov 26 08:00:09"
 }
 
-@test "egress-log: marks the denied domains allowlist-dev would let through" {
+@test "egress-log: marks the denied domains the cache serves, and those allowlist-dev would let through" {
   run "$EGRESS_LOG"
   denied="$(section "$output" "Denied, not on the allowlist:")"
-  grep 'registry.npmjs.org:443' <<<"$denied" | grep -qF '(make egress-dev allows it)'
+  grep 'registry.npmjs.org:443' <<<"$denied" | grep -qF '(make caches serves it)'
   grep 'github.com:443' <<<"$denied" | grep -qF '(make egress-dev allows it)'
   grep -q 'example.com:443' <<<"$denied"
-  not grep -q 'example.com:443.*egress-dev' <<<"$denied"
+  not grep -q 'example.com:443.*make' <<<"$denied"
   contains "$output" "add it to claude-jail/egress-hardening/allowlist"
+  contains "$output" "work with the strict allowlist once the dependency cache runs"
+  contains "$output" "The ones marked 'make egress-dev' are in allowlist-dev"
 }
 
 @test "egress-log: matches outcomes to requests by host and port when connections interleave" {

@@ -38,6 +38,9 @@ JAIL_PROXY         ?= claude-proxy
 JAIL_PROXY_IMAGE   ?= claude-egress-proxy
 JAIL_NET_INTERNAL  ?= jail-internal
 JAIL_NET_EGRESS    ?= jail-egress
+JAIL_CACHE         ?= claude-cache
+JAIL_CACHE_IMAGE   ?= claude-dep-cache
+JAIL_CACHE_VOLUME  := $(JAIL_VOLUME_PREFIX)-depcache
 JAIL_PERSONAL_SKILLS_DIR ?= $(CURDIR)/personal-skills
 
 # Where your projects live: the only directories the Claude jail may be
@@ -72,11 +75,13 @@ SKOPEO         := quay.io/skopeo/stable:v1.25.1@sha256:4784191278912fc8e8dd914fd
 SCRIPTS        := dev.sh doctor.sh bump-images.sh claude-jail/common.sh claude-jail/launch_claude.sh \
                   claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh claude-jail/profile.sh \
                   claude-jail/egress-hardening/setup-egress.sh claude-jail/egress-hardening/egress-log.sh \
+                  claude-jail/egress-hardening/setup-caches.sh claude-jail/egress-hardening/cache-entrypoint.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
                   tests/static/policy.sh tests/ci/setup-rootless-podman.sh \
                   tests/unit/stubs/podman \
                   tests/integration/fixtures/claude-stub
 CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Containerfile.proxy \
+                  claude-jail/egress-hardening/Containerfile.cache \
                   $(wildcard devcontainers/*/Containerfile)
 
 # Several targets are order-dependent ('all' downloads before it builds,
@@ -90,6 +95,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
         build build-claude build-go build-php build-react build-vue egress egress-dev egress-log \
+        caches caches-down \
         aliases devcontainer ai-sessions profile personal-skills fix-volumes verify doctor bump-images lint clean-images \
         test test-static test-unit test-integration test-all
 
@@ -212,6 +218,22 @@ egress-log: ## What the egress proxy allowed and denied, per domain (SINCE=1h, F
 	 JAIL_PROXY="$(JAIL_PROXY)" "$(CLAUDE_JAIL)/egress-hardening/egress-log.sh" \
 	   $${since:+--since "$$since"} $(if $(FOLLOW),--follow)
 
+# Go modules and npm packages for claude-jailed, through a cache that sits on
+# the proxy's two networks: the strict allowlist is then enough to build. The
+# downloads are kept in their own volume, which caches-down leaves in place.
+caches: ## Start the dependency cache for claude-jailed (Go modules, npm); needs 'make egress' first
+	JAIL_VOLUME_PREFIX="$(JAIL_VOLUME_PREFIX)" JAIL_CACHE="$(JAIL_CACHE)" JAIL_CACHE_IMAGE="$(JAIL_CACHE_IMAGE)" \
+	JAIL_NET_INTERNAL="$(JAIL_NET_INTERNAL)" JAIL_NET_EGRESS="$(JAIL_NET_EGRESS)" \
+	  "$(CLAUDE_JAIL)/egress-hardening/setup-caches.sh"
+
+caches-down: ## Stop and remove the dependency cache (its downloads stay in their volume)
+	@if podman container exists $(JAIL_CACHE) 2>/dev/null; then \
+	   podman rm -f $(JAIL_CACHE) >/dev/null && \
+	   echo "OK: $(JAIL_CACHE) removed. Its downloads stay in the volume $(JAIL_CACHE_VOLUME) ('podman volume rm $(JAIL_CACHE_VOLUME)' deletes them)."; \
+	 else \
+	   echo "OK: there is no $(JAIL_CACHE): nothing to stop."; \
+	 fi
+
 # The installed copy starts with a 3-line header that pins this checkout and
 # the projects directory, so the repo can live anywhere. 'verify' compares the
 # rest of the file against dev.sh.
@@ -323,7 +345,7 @@ fix-volumes: ## Repair ownership and SELinux labels of the Claude jail volumes
 
 verify: ## Sanity checks for the environment
 	@echo "== Claude binary =="; CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" "$(CURDIR)/claude-jail/check-claude-bin.sh" --report
-	@echo "== Images =="; podman images --format '  {{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E 'claude-jail|devcontainer|$(JAIL_PROXY_IMAGE)' || echo "  none"
+	@echo "== Images =="; podman images --format '  {{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E 'claude-jail|devcontainer|$(JAIL_PROXY_IMAGE)|$(JAIL_CACHE_IMAGE)' || echo "  none"
 ifeq ($(OS),Darwin)
 	@echo "== Podman machine =="; podman machine inspect --format '  {{.Name}}: {{.State}}, rootful={{.Rootful}}' 2>/dev/null || echo "  none (make podman-setup)"
 	@if podman machine ssh 'findmnt -n -o TARGET -T /Users' 2>/dev/null | grep -qx /Users; then \
@@ -350,6 +372,11 @@ endif
 	 else \
 	   echo "  proxy $(JAIL_PROXY): does not exist (make egress)"; \
 	 fi
+	@if podman container exists $(JAIL_CACHE) 2>/dev/null; then \
+	   echo "  dependency cache $(JAIL_CACHE): $$(podman inspect -f '{{.State.Status}}' $(JAIL_CACHE))"; \
+	 else \
+	   echo "  dependency cache $(JAIL_CACHE): does not exist (optional: make caches)"; \
+	 fi
 	@# A process on jail-internal should not be able to resolve outside names:
 	@# if it can, DNS is an exfiltration channel the proxy never sees.
 	@if podman network exists $(JAIL_NET_INTERNAL) 2>/dev/null && podman image exists $(JAIL_IMAGE) 2>/dev/null; then \
@@ -364,7 +391,8 @@ endif
 # fixes each problem. Exit status 1 when something will not work.
 doctor: ## Check the whole setup and print the fix for every problem (changes nothing)
 	@DEV_PROJECTS="$(DEV_PROJECTS)" JAIL_IMAGE="$(JAIL_IMAGE)" JAIL_VOLUME_PREFIX="$(JAIL_VOLUME_PREFIX)" \
-	 JAIL_PROXY="$(JAIL_PROXY)" JAIL_NET_INTERNAL="$(JAIL_NET_INTERNAL)" CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" \
+	 JAIL_PROXY="$(JAIL_PROXY)" JAIL_NET_INTERNAL="$(JAIL_NET_INTERNAL)" JAIL_CACHE="$(JAIL_CACHE)" \
+	 CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" \
 	 "$(CURDIR)/doctor.sh"
 
 # Every FROM, COPY --from and tool image above is 'name:tag@sha256:...'
@@ -404,6 +432,6 @@ test-integration: ## Level 3: real rootless podman (TESTS=<files> to pick, needs
 	$(or $(BATS),bats) --timing $(TESTS)
 
 clean-images: ## Remove the built images (leaves volumes and data alone)
-	-podman rmi $(JAIL_IMAGE) $(JAIL_PROXY_IMAGE) \
+	-podman rmi $(JAIL_IMAGE) $(JAIL_PROXY_IMAGE) $(JAIL_CACHE_IMAGE) \
 	  localhost/devcontainer-go:latest localhost/devcontainer-php:latest \
 	  localhost/devcontainer-react:latest localhost/devcontainer-vue:latest

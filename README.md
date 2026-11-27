@@ -32,6 +32,10 @@ Infrastructure for running **Claude Code** and the **JetBrains IDEs** (GoLand, P
 │       ├── allowlist-dev       # opt-in: Go modules, GitHub, npm
 │       ├── setup-egress.sh
 │       ├── egress-log.sh       # 'make egress-log': what the proxy allowed and denied
+│       ├── Containerfile.cache # 'make caches': Go modules and npm packages for claude-jailed
+│       ├── cache-nginx.conf
+│       ├── cache-entrypoint.sh
+│       ├── setup-caches.sh
 │       └── launch_claude_jailed.sh
 ├── devkit/                     # Claude Code plugin with the shared skills (see "Skills")
 │   ├── .claude-plugin/plugin.json
@@ -85,6 +89,8 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make egress` | Egress proxy with the **strict** allowlist (Anthropic only) |
 | `make egress-dev` | Same, but also allowing Go modules, GitHub and npm |
 | `make egress-log [SINCE=1h] [FOLLOW=1]` | What the proxy allowed and denied, per domain with counts; `FOLLOW=1` shows each connection as it happens (see [What the proxy let through](#what-the-proxy-let-through)) |
+| `make caches` | Start the dependency cache, so `claude-jailed` can download Go modules and npm packages with the strict allowlist (see [Dependency cache](#dependency-cache)). Needs `make egress` first |
+| `make caches-down` | Stop and remove the dependency cache; what it downloaded stays in its volume |
 | `make aliases` | Copy `dev.sh` and hook it into `~/.bashrc` |
 | `make devcontainer PROJECT=<path> TYPE=go\|php\|react\|vue` | Copy the `devcontainer.json` into the given project (`FORCE=1` to overwrite an existing one) |
 | `make ai-sessions PROJECT=<path>` | Add `.ai-sessions/` (local AI session notes, gitignored except its README) to a project. `newproj-*` does it for you; `FORCE=1` replaces the README with the current template |
@@ -92,7 +98,7 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make personal-skills [SRC=<dir>]` | Copy your own Claude skills (`~/.claude/skills` by default) to `personal-skills/`, which the jail loads read-only (see [Skills](#skills)) |
 | `make fix-volumes` | Repair ownership and SELinux labels of the Claude volumes (see [Troubleshooting](#troubleshooting)) |
 | `make verify` | Check the binary (version, checksum, architecture), images, socket, aliases, egress and DNS leaks |
-| `make doctor` | Check the whole setup (podman version, rootless, the podman machine's memory and shared folders, subuids, cgroups, network backend, the binary, images, volumes, aliases, the proxy) and print the command that fixes each problem. Changes nothing; exits 1 if something will not work |
+| `make doctor` | Check the whole setup (podman version, rootless, the podman machine's memory and shared folders, subuids, cgroups, network backend, the binary, images, volumes, aliases, the proxy and the dependency cache) and print the command that fixes each problem. Changes nothing; exits 1 if something will not work |
 | `make bump-images` | Pin every base image to the digest its tag points to now, and say what changed (see [Updating the base images](#updating-the-base-images)) |
 | `make lint` | shellcheck + hadolint, run in containers |
 | `make test` | Static checks + unit tests (fast, starts no real jail) |
@@ -114,10 +120,11 @@ claude-jail            # normal network
 # or, with egress restricted to Anthropic only:
 claude-proxy           # once, starts the proxy (strict allowlist)
 claude-proxy-dev       # ...or also allowing Go modules, GitHub and npm
+claude-caches          # optional, once: Go and npm downloads with the strict allowlist
 claude-jailed          # Claude with no direct route to the internet
 ```
 
-Arguments go straight to Claude: `claude-jail --resume`, `claude-jailed -p "explain this repo"`. Each launch gets its own container name, so you can have Claude running in several projects at once. The normal-network mode uses podman's default rootless network (pasta on podman 5, slirp4netns before); force one with `JAIL_NETWORK=pasta` or `JAIL_NETWORK=slirp4netns` (any other value is refused), or per project (see [Per-project settings](#per-project-settings)). After a reboot the egress proxy is left stopped: `podman start claude-proxy` brings it back, and `claude-jailed` tells you when it is down.
+Arguments go straight to Claude: `claude-jail --resume`, `claude-jailed -p "explain this repo"`. Each launch gets its own container name, so you can have Claude running in several projects at once. The normal-network mode uses podman's default rootless network (pasta on podman 5, slirp4netns before); force one with `JAIL_NETWORK=pasta` or `JAIL_NETWORK=slirp4netns` (any other value is refused), or per project (see [Per-project settings](#per-project-settings)). After a reboot the egress proxy and the dependency cache are left stopped: `podman start claude-proxy claude-cache` brings them back, and `claude-jailed` tells you when either is down.
 
 When Claude exits (normally, with an error or on Ctrl-C), the launcher lists the files your host runs that changed during the session: the `Makefile`, `package.json`, `composer.json`, `go.mod`, `.envrc`, CI workflows, shell scripts at the root, `.git/hooks` and `.git/config`, `.gitmodules`, `.devcontainer`, `.mcp.json` and the project's Claude settings (`.claude/settings.json`, `.claude/settings.local.json`). The read-only ones are there for the files Claude creates, which a read-only mount cannot cover. Review them before you run `make`, an npm script or a git command on the host:
 
@@ -159,16 +166,41 @@ The file's name is the project's path under `$DEV_PROJECTS`, so `acme/api` and `
 
 ### What works in each mode
 
-| | `claude-jail` | `claude-jailed` (after `make egress`) | `claude-jailed` (after `make egress-dev`) |
-|---|---|---|---|
-| Talk to Claude | yes | yes | yes |
-| Read/edit the project | yes | yes | yes |
-| `go mod download`, `git clone`, `npm install`, `npx` | yes | **no** | yes |
-| Direct route to the internet | yes | no | no |
+| | `claude-jail` | `claude-jailed` (after `make egress`) | `claude-jailed` (`make egress` + `make caches`) | `claude-jailed` (after `make egress-dev`) |
+|---|---|---|---|---|
+| Talk to Claude | yes | yes | yes | yes |
+| Read/edit the project | yes | yes | yes | yes |
+| `go mod download`, `npm install`, `npx`, pnpm, yarn | yes | **no** | yes | yes |
+| `git clone`, Go modules that are not on proxy.golang.org | yes | **no** | **no** | yes |
+| Direct route to the internet | yes | no | no | no |
 
-The jail image ships the Go toolchain and Node 24 (npm, plus pnpm and yarn through corepack), so Claude can run the type checks, linters and tests of Go, React and Vue projects. Strict mode is fine for conversing and editing but **not for building**: without `proxy.golang.org`, `github.com` and `registry.npmjs.org` on the allowlist, `go mod download`, `git clone`, `npm install` and corepack's first download of pnpm fail. If you need to build inside the jail, start the proxy with `make egress-dev` (see the security trade-off documented in `allowlist-dev`).
+The jail image ships the Go toolchain and Node 24 (npm, plus pnpm and yarn through corepack), so Claude can run the type checks, linters and tests of Go, React and Vue projects. With the strict allowlist alone, `go mod download`, `npm install` and corepack's first download of pnpm or yarn fail, because `proxy.golang.org`, `sum.golang.org` and `registry.npmjs.org` are not on it. The dependency cache (`make caches`, below) fixes that without adding them. `git clone` needs `github.com`: only `make egress-dev` allows it (see the security trade-off documented in `allowlist-dev`).
 
 For Node projects, install the dependencies in the dev container (see the security note on lifecycle scripts) and let Claude use that `node_modules`: the project directory is shared, and the jail and the dev containers run the same Node major, so native modules load in both. Keep the three `node:` tags in step when you change one. npm's cache lives in `~/.cache/npm`, inside the `claude-gocache` volume, so it survives between sessions like the Go build cache.
+
+### Dependency cache
+
+```bash
+make egress    # the proxy and its networks, if they are not there yet
+make caches    # or: claude-caches
+claude-jailed  # go, npm, npx, pnpm and yarn now download through the cache
+```
+
+`make caches` starts `claude-cache`, an nginx container built here from Ubuntu (no third-party image). Like the proxy, it sits on `jail-internal`, where the jail reaches it, and on `jail-egress`, where it goes out to three fixed hosts and nothing else:
+
+| Port | Serves | From |
+|---|---|---|
+| 3000 | Go modules, and their checksum database | `proxy.golang.org`, `sum.golang.org` |
+| 4873 | npm packages (npm, npx, pnpm, yarn, and corepack's download of pnpm and yarn) | `registry.npmjs.org` |
+
+When the cache runs, `claude-jailed` adds it to the jail's `/etc/hosts` and sets `GOPROXY`, `npm_config_registry`, `COREPACK_NPM_REGISTRY` and yarn's registry to it; it is reached directly, not through the proxy. The jail itself still cannot open `proxy.golang.org`, `registry.npmjs.org` or `github.com`: the proxy keeps refusing them. When the cache is stopped, `claude-jailed` prints a note and starts without it.
+
+- **Only reads.** It answers GET and HEAD: `npm publish`, `npm login` and `npm audit` (which posts the project's whole dependency list) get a 405. It drops `Authorization` and `Cookie` headers, so a token in a project's `.npmrc` is never sent on.
+- **Lockfiles stay portable.** `package-lock.json` keeps `https://registry.npmjs.org/...` URLs (npm rewrites them to the registry it is given), and `pnpm-lock.yaml` and `yarn.lock` hold no registry address. A project installed in the jail installs the same way on the host, in a dev container or in CI.
+- **Checksums are checked as usual.** `go` checks every module against `sum.golang.org` through the cache. That database is signed, so the cache cannot change what it says; npm checks every tarball against the `integrity` of the lockfile or the registry.
+- **What it keeps.** Downloads go to the `claude-depcache` volume (up to 5 GB for Go and 5 GB for npm; what nobody asked for in 90 days is dropped). How long an answer is fresh is up to the registry (minutes for package lists, hours for module files); when the registry cannot be reached, whatever is already cached is served. `make caches-down` removes the container and keeps the volume; `podman volume rm claude-depcache` deletes the downloads.
+- **What it does not cover.** Private modules and packages (`GOPRIVATE`, a scoped registry in `.npmrc`) still go to the proxy, as do Go modules that `proxy.golang.org` does not have (`GOPROXY` ends in `direct`) and `git clone`: they need their host on the allowlist, or `make egress-dev`. There is no Composer mirror: the jail image has no PHP.
+- **Its log.** `podman logs claude-cache` lists every request the jail made to it, with the package or module name.
 
 ### What the proxy let through
 
@@ -180,14 +212,14 @@ make egress-log FOLLOW=1     # one line per connection as it happens; Ctrl-C to 
 
 ```
 Denied, not on the allowlist:
-       3  registry.npmjs.org:443                   last Nov 26 08:00:09  (make egress-dev allows it)
+       3  registry.npmjs.org:443                   last Nov 26 08:00:09  (make caches serves it)
        1  example.com:443                          last Nov 26 08:00:09
 
 Allowed:
        2  api.anthropic.com:443                    last Nov 26 08:00:09
 ```
 
-When a command fails under `claude-jailed`, this shows which domain it needed. To allow one, add it to `claude-jail/egress-hardening/allowlist` and run `make egress`; the marked ones are already in `allowlist-dev`. "Failed" means the domain was allowed but its name did not resolve or the host did not answer. The proxy only sees host names (HTTPS goes through it as `CONNECT`), never URLs or content, and every jailed session shares it, so the log does not say which project a connection came from. The log belongs to the proxy container: `make egress` recreates the container, which starts an empty log, and where podman keeps logs in a file (rather than journald) it is capped at 10 MB.
+When a command fails under `claude-jailed`, this shows which domain it needed. To allow one, add it to `claude-jail/egress-hardening/allowlist` and run `make egress`. The marked ones need no change to the allowlist: `make caches` serves the Go and npm registries, and the rest are already in `allowlist-dev`. "Failed" means the domain was allowed but its name did not resolve or the host did not answer. The proxy only sees host names (HTTPS goes through it as `CONNECT`), never URLs or content, and every jailed session shares it, so the log does not say which project a connection came from. The log belongs to the proxy container: `make egress` recreates the container, which starts an empty log, and where podman keeps logs in a file (rather than journald) it is capped at 10 MB.
 
 **IDE (Tier 1, backend in a container):**
 
@@ -299,6 +331,7 @@ Every `FROM` and `COPY --from` in the Containerfiles, and the images the Makefil
 - **Claude's credentials and account state live in the `claude-home` volume** (mounted at `~/.claude`; `CLAUDE_CONFIG_DIR` points there, so `.claude.json` is kept too instead of being lost on every run). They are readable by anything running inside the jail, including project code that Claude executes. That is inherent to the design — Claude needs its token — but factor it in when judging the blast radius of a project you do not trust.
 - **`--cap-add=FOWNER`/`CHOWN` in the dev containers** relax `--cap-drop=ALL` so the Gateway worker can deploy itself. With `--userns=keep-id` those capabilities only apply inside your subuid range, so they grant no power over files outside your user.
 - **The egress allowlist filters by hostname, not by IP.** It is a reasonable exfiltration control, not a guarantee: it does not inspect the contents of the TLS tunnel (it is `CONNECT`, not MITM), so any permitted domain remains a possible channel out. It also cannot see DNS, so `jail-internal` is created with DNS turned off (`--disable-dns`): older aardvark-dns versions forward queries from internal networks, which would be a second (slow, but real) channel out. The jail finds the proxy through an `/etc/hosts` entry the launcher adds. `make egress` recreates a `jail-internal` left with DNS on by an older setup, and `make verify` still checks that outside names do not resolve. `make egress-log` lists what the proxy allowed and refused.
+- **The dependency cache is a narrow way out, not a closed one.** It only sends GET requests to three fixed hosts, without bodies or tokens, and it relays nothing else. But the jail chooses what to ask for. A Go module path makes `proxy.golang.org` fetch that module from its origin, so a path such as `example.com/<data>` reaches a server someone controls; every package name the jail asks for reaches the npm registry. That is much less than `make egress-dev`, which opens `github.com` (repositories, gists, the API) to the jail, but leave the cache off (`make caches-down`) for a project you do not trust. It runs hardened like the proxy (no capabilities, read-only root file system, its own memory and process limits). Every jailed session shares it, so a project can tell from the `X-Cache` header whether another one already downloaded a package.
 - **The normal-network mode (`claude-jail`) can reach your LAN** and, depending on the podman network backend, services on the host. Use `claude-jailed` for anything you do not trust.
 
 ## Compared with Claude Code's own isolation
@@ -311,7 +344,7 @@ Claude Code ships its own sandbox, and Anthropic publishes a reference dev conta
 | What it can read | Most of the machine by default, `~/.ssh` and `~/.aws/credentials` included; narrowed with `denyRead` | What you mount into it | The project and its own volumes. Your home is never mounted, and on macOS the VM only shares `$DEV_PROJECTS` and this repo |
 | What it can write | The working directory, a temp directory and directories you add | The mounted workspace | The project |
 | Project files your host runs later | Protects `.claude` settings, `.mcp.json`, shell startup files and `~/.claude` | Not covered | Read-only: `.devcontainer`, `.git/hooks` and `.git/config` (also in nested repos and submodules), `.gitmodules`, `.envrc`, `.claude/settings.json`, `.mcp.json`, `.vscode`, `.idea`. `.claude/settings.local.json` stays writable and is listed on exit when it changes (see [Security notes](#security-notes-read-them)) |
-| Network | A local proxy with a domain allowlist that starts empty; new domains prompt or are refused depending on the permission mode | A default-deny iptables firewall (needs `NET_ADMIN` and `NET_RAW`) | Normal network with `claude-jail`; with `claude-jailed`, a hostname allowlist on port 443 only, no direct route and no DNS |
+| Network | A local proxy with a domain allowlist that starts empty; new domains prompt or are refused depending on the permission mode | A default-deny iptables firewall (needs `NET_ADMIN` and `NET_RAW`) | Normal network with `claude-jail`; with `claude-jailed`, a hostname allowlist on port 443 only, no direct route and no DNS, plus an optional read-only cache for Go modules and npm packages |
 | Your host credentials | Readable unless you deny them | Absent unless you mount them | Absent |
 | Ways out from inside a session | Claude can retry a command unsandboxed (`dangerouslyDisableSandbox`, with your approval depending on the mode); `excludedCommands` and `!` commands run outside | None | None |
 | Changes you should review on the host | Not covered | Not covered | Listed when the session ends: `Makefile`, `package.json`, CI workflows, root scripts, `.git/hooks` and other files the host runs |
@@ -333,12 +366,12 @@ Three levels, from cheap to thorough. CI runs all of them on every push (`.githu
 | Level | Command | Needs | What it covers |
 |---|---|---|---|
 | 1. Static | `make test-static` | podman (or `ENGINE=docker`), python3 | shellcheck, hadolint, and repo policies: base images fully qualified and pinned by digest, every `devcontainer.json` parses and keeps its hardening flags and installs nothing automatically, every `make` target the README lists exists, the devkit skills follow `devkit/README.md` |
-| 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers, `setup-egress.sh`, the personal skills mount, project profiles (parsing, mistakes, what wins over what), the Makefile targets (`devcontainer`, `ai-sessions`, `profile`, `personal-skills`, `aliases`, `verify`, `fix-volumes`), `dev.sh`, `doctor.sh`, `bump-images.sh` (with a fake registry) and `egress-log.sh` (with a real tinyproxy log) |
-| 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits (also from a project profile), read-only host-executed paths (also a symlink left at one, and paths a profile adds) and personal skills, Node and npm inside the jail, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak, and `egress-log.sh` on its real log) and each dev container run with its own `devcontainer.json` |
+| 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers (with and without the dependency cache), `setup-egress.sh`, `setup-caches.sh`, the personal skills mount, project profiles (parsing, mistakes, what wins over what), the Makefile targets (`devcontainer`, `ai-sessions`, `profile`, `personal-skills`, `aliases`, `verify`, `fix-volumes`, `caches`, `caches-down`), `dev.sh`, `doctor.sh`, `bump-images.sh` (with a fake registry) and `egress-log.sh` (with a real tinyproxy log) |
+| 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits (also from a project profile), read-only host-executed paths (also a symlink left at one, and paths a profile adds) and personal skills, Node and npm inside the jail, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak, and `egress-log.sh` on its real log), the dependency cache with the strict allowlist (`go get` with its checksums, npm, pnpm and yarn through corepack, lockfiles that keep `registry.npmjs.org`, GET and HEAD only, a stopped cache) and each dev container run with its own `devcontainer.json` |
 
 `make test` runs levels 1 and 2 and works anywhere with podman, macOS included (`ENGINE=docker` also works for these two levels). `make test-unit BATS=bats` uses a local bats instead of the container; on a Mac, `env PATH=/usr/bin:/bin:/usr/sbin:/sbin "$(command -v bats)" tests/unit` runs them with the stock macOS tools, as CI does.
 
-The integration tests are safe on your workstation: everything they create is named `claudetest-*` or tagged `:test`, so your volumes, login, proxy, networks and images are never touched, and the jail image is built with a stub (`tests/integration/fixtures/claude-stub`) instead of the real binary. Pick files with `TESTS=`, e.g. `make test-integration TESTS=tests/integration/volumes.bats`; `DC_TYPES_UNDER_TEST=go` limits the dev containers, `JAIL_TEST_OFFLINE=1` skips the egress tests.
+The integration tests are safe on your workstation: everything they create is named `claudetest-*` or tagged `:test`, so your volumes, login, proxy, networks and images are never touched, and the jail image is built with a stub (`tests/integration/fixtures/claude-stub`) instead of the real binary. Pick files with `TESTS=`, e.g. `make test-integration TESTS=tests/integration/volumes.bats`; `DC_TYPES_UNDER_TEST=go` limits the dev containers, `JAIL_TEST_OFFLINE=1` skips the egress and cache tests.
 
 SELinux tests skip themselves unless SELinux is enforcing, which is never the case on GitHub's runners: **run `make test-integration` on an enforcing host** to cover the SELinux labels: the login bug, and two containers writing to the same project at once (which with `:Z` would cut the first one off). Two things are not automated at all and stay manual: logging in to Claude for real, and JetBrains Gateway.
 

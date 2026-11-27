@@ -1,0 +1,15 @@
+# Dependency cache for the jailed Claude (Go modules and npm packages): nginx
+# from Ubuntu, configured in cache-nginx.conf. Built locally, like the proxy,
+# so we do not depend on third-party images. Use 'make caches'.
+FROM docker.io/library/ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+RUN apt-get update && apt-get install -y --no-install-recommends nginx ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/cache/claude-deps \
+    && chown 1000:1000 /var/cache/claude-deps
+COPY cache-nginx.conf /etc/nginx/claude-cache.conf
+COPY cache-entrypoint.sh /usr/local/bin/cache-entrypoint
+# The cache volume (make caches) is mounted there; a new volume takes the
+# directory's owner, UID 1000.
+USER 1000:1000
+EXPOSE 3000 4873
+ENTRYPOINT ["/usr/local/bin/cache-entrypoint"]
