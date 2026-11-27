@@ -23,6 +23,8 @@ A folder named like the server (lowercase letters, digits and `-`, up to 32 char
 
 The server reaches the internet only through its own proxy, so it has to honour `HTTPS_PROXY`. Python, Go and curl do; Node's built-in `fetch` does with `NODE_USE_ENV_PROXY=1`, which the container gets. A server that only speaks stdio needs a bridge to HTTP inside its image.
 
+An API key or token it needs goes in a private file on the host, not in the folder: `make secrets MCP=<name>` writes `~/.config/dev-infra/secrets/mcp/<name>.env` (`NAME=value` lines), and `make mcp-up` passes it to the server's container as environment variables. No jail gets it.
+
 Then `make mcp-up NAME=<name>`, and `make mcp-list` to see it. If it stops right after it starts, `mcp-up` prints its last log lines.
 
 ## Updating a server

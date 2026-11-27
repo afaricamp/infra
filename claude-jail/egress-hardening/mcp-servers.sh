@@ -16,6 +16,9 @@
 #   pids       process limit                                 (default 256)
 # A project gets a server with 'mcp = NAME' in its profile. Its networks, its
 # proxy and the reasons for them: "MCP servers" in common.sh.
+# A key or token the server needs goes in $JAIL_SECRETS_DIR/mcp/NAME.env
+# ('make secrets MCP=NAME'), which 'up' passes with --env-file: to the
+# server's container, never to a jail. It has to be private (mode 600).
 #
 # 'up' replaces the server and its proxy every time, from the definition as it
 # is now, and the proxy from the image 'make egress' built last. After a
@@ -53,6 +56,7 @@ mcp_names() {
   NET="$JAIL_NET_INTERNAL-mcp-$NAME"
   OUT_NET="$NET-out"
   PROXY="$JAIL_PROXY-mcp-$NAME"
+  SECRETS="$JAIL_SECRETS_DIR/mcp/$NAME.env"
 }
 
 mcp_up() {
@@ -84,6 +88,16 @@ mcp_up() {
     fi
   fi
 
+  # Its secrets, if it has any ('make secrets MCP=<name>'): private, and
+  # outside the projects.
+  if [ -e "$SECRETS" ]; then
+    jail_outside_projects "$SECRETS" "the secrets file" \
+      "Keep secrets in ~/.config/dev-infra/secrets, or point JAIL_SECRETS_DIR outside DEV_PROJECTS."
+    jail_private_file "$SECRETS" ||
+      jail_die "$SECRETS is not private: others can read it, or it is not yours." \
+        "Make it private with 'chmod 600 $SECRETS' (or 'make secrets MCP=$NAME'), then run this again."
+  fi
+
   echo ">> Building $IMAGE from $DIR"
   podman build -t "$IMAGE" "$DIR"
 
@@ -113,6 +127,10 @@ mcp_up() {
     # Left by an earlier definition that had an allowlist.
     podman network rm "$OUT_NET" >/dev/null 2>&1 || true
   fi
+
+  # Its secrets (checked before anything changed): environment variables of
+  # this container only. podman reads the file here, on the host.
+  [ ! -e "$SECRETS" ] || run_flags+=(--env-file "$SECRETS")
 
   # UID 1000 without keep-id: on the host it is one of your subordinate UIDs,
   # not you. Nothing mounted, read-only, no capabilities. HOME is the tmpfs.
@@ -148,6 +166,9 @@ mcp_up() {
     echo "  It reaches: $JAIL_ALLOWLIST, through $PROXY (make egress-log JAIL_PROXY=$PROXY)."
   else
     echo "  It reaches nothing outside: its mcp.conf has no allowlist."
+  fi
+  if [ -e "$SECRETS" ]; then
+    echo "  Its secrets: $(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$SECRETS" || true) from $SECRETS."
   fi
   echo "  A project gets it with 'mcp = $NAME' in its profile (make profile PROJECT=<path>)."
   echo "  A claude-jailed already running keeps the old address: start it again."

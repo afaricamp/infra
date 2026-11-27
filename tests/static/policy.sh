@@ -11,6 +11,9 @@ bad() { printf 'FAIL  %s\n' "$1" >&2; fail=1; }
 ok()  { printf 'ok    %s\n' "$1"; }
 # check DESCRIPTION CMD...: ok if CMD succeeds, FAIL otherwise.
 check() { local what="$1"; shift; if "$@"; then ok "$what"; else bad "$what"; fi; }
+# not_in FILE -- REGEX: no line of FILE, comments aside, matches REGEX.
+# shellcheck disable=SC2317  # called through check
+not_in() { ! grep -vE '^[[:space:]]*(#|//)' "$1" | grep -qE -- "$3"; }
 
 # Shell syntax of everything that is run or sourced.
 for f in dev.sh doctor.sh bump-images.sh claude-jail/*.sh claude-jail/egress-hardening/*.sh tests/static/*.sh tests/unit/stubs/*; do
@@ -86,6 +89,21 @@ for d in mcp/*/; do
     fi
     check "mcp/$n: npm ci from package-lock.json, with --ignore-scripts" [ "$npm_ok" = yes ]
   fi
+done
+
+# Secrets never reach the Claude jail (see "Secrets" in common.sh): its
+# launchers pass no env file and never name the secrets folder, and common.sh
+# only defines JAIL_SECRETS_DIR (its functions take paths as arguments). The
+# dev container templates load none either: 'make secrets' adds the line to
+# a project's own copy.
+for f in claude-jail/launch_claude.sh claude-jail/egress-hardening/launch_claude_jailed.sh; do
+  check "$f passes no env file and no secrets" not_in "$f" -- '--env-file|JAIL_SECRETS_DIR|dev-infra/secrets'
+done
+check "claude-jail/common.sh passes no env file" not_in claude-jail/common.sh -- '--env-file'
+check "claude-jail/common.sh uses JAIL_SECRETS_DIR only to define it" \
+  [ "$(grep -vE '^[[:space:]]*#' claude-jail/common.sh | grep -c JAIL_SECRETS_DIR)" = 1 ]
+for f in devcontainers/*/devcontainer.json; do
+  check "$f loads no env file (make secrets adds one per project)" not_in "$f" -- '--env-file'
 done
 
 # Every devcontainer.json parses, names an image we build, and keeps the
