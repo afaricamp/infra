@@ -35,7 +35,8 @@ mkdir -p "$(dirname "$file")"
 # One 'key = value' per line, a '#' at the start makes a comment. Values are
 # read literally and never run: no quotes, \$ or backslashes. An unknown key
 # stops the launch. An environment variable (JAIL_MEMORY, JAIL_PIDS,
-# JAIL_NETWORK, JAIL_RO_PATHS, JAIL_WATCH_PATHS) wins over this file.
+# JAIL_NETWORK, JAIL_RO_PATHS, JAIL_WATCH_PATHS, JAIL_ALLOWLIST) wins over
+# this file.
 
 # Memory limit, swap off. Default: $JAIL_DEFAULT_MEMORY.
 # memory = 8g
@@ -61,6 +62,13 @@ EOF
   fold_list "$JAIL_DEFAULT_WATCH_PATHS"
   cat <<EOF
 # watch_paths = scripts Taskfile.yml
+
+# More hosts claude-jailed may reach, for this project only, separated by
+# spaces: a domain (it also allows its subdomains), or @dev for the
+# development allowlist (Go modules, GitHub, npm). Anthropic is always
+# allowed. The project then gets a proxy of its own. claude-jail ignores it.
+# Default: the allowlist of 'make egress' (or 'make egress-dev').
+# allowlist = gitlab.example.com @dev
 EOF
 } > "$file"
 

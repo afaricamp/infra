@@ -15,7 +15,14 @@ setup_file() {
 }
 
 teardown_file() {
+  local p
   podman rm -f "$JAIL_CACHE" "$JAIL_PROXY" >/dev/null 2>&1 || true
+  for p in $(podman ps -aq --filter "label=dev-infra.proxy-group=$JAIL_PROXY" 2>/dev/null); do
+    podman rm -f "$p" >/dev/null 2>&1 || true
+  done
+  for p in $(podman network ls -q --filter "label=dev-infra.proxy-group=$JAIL_PROXY" 2>/dev/null); do
+    podman network rm -f "$p" >/dev/null 2>&1 || true
+  done
   podman network rm -f "$JAIL_NET_INTERNAL" "$JAIL_NET_EGRESS" >/dev/null 2>&1 || true
   podman volume rm -f "$JAIL_VOLUME_PREFIX-depcache" >/dev/null 2>&1 || true
   remove_test_volumes
@@ -99,6 +106,27 @@ to_cache() {
     to_cache $req
     contains "$output" " 405 " || { echo "not refused: $req" >&2; false; }
   done
+  to_cache HEAD 4873 /is-number
+  contains "$output" " 200 "
+}
+
+@test "a project with its own allowlist reaches the cache on its proxy's network; make egress-prune takes the cache off it" {
+  mkdir -p "$JAIL_PROFILES_DIR"
+  echo 'allowlist = example.com' > "$JAIL_PROFILES_DIR/svc.conf"
+  to_cache HEAD 4873 /is-number
+  echo "$output"
+  contains "$output" " 200 "
+  local name; name="$(sed -nE "s/^Proxy: ($JAIL_PROXY-[0-9a-f]{12}), .*/\1/p" <<<"$output")"
+  [ -n "$name" ]
+  local net="$JAIL_NET_INTERNAL-${name##*-}"
+  [ -n "$(podman container inspect -f "{{with index .NetworkSettings.Networks \"$net\"}}{{.IPAddress}}{{end}}" "$JAIL_CACHE")" ]
+
+  run "$REPO/claude-jail/egress-hardening/prune-proxies.sh"
+  echo "$output"
+  contains "$output" "removed $name"
+  not podman network exists "$net"
+  # The cache stays, on the main network.
+  rm "$JAIL_PROFILES_DIR/svc.conf"
   to_cache HEAD 4873 /is-number
   contains "$output" " 200 "
 }

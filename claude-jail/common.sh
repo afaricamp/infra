@@ -439,12 +439,14 @@ jail_watch_report() {
 #   network      pasta or slirp4netns (claude-jail) as JAIL_NETWORK
 #   ro_paths     more paths to mount read-only      added to the defaults
 #   watch_paths  more paths for the exit report     added to the defaults
+#   allowlist    more hosts for claude-jailed       as JAIL_ALLOWLIST (see
+#                                                   "Per-project allowlist")
 # The two lists only add: a profile can protect more, never less, and a path
 # added to the defaults later also covers the projects that have a profile.
 # The environment wins over the profile, and JAIL_RO_PATHS and
 # JAIL_WATCH_PATHS still replace their whole list.
 JAIL_PROFILES_DIR="${JAIL_PROFILES_DIR:-$HOME/.config/dev-infra/projects}"
-JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths"
+JAIL_PROFILE_KEYS="memory pids network ro_paths watch_paths allowlist"
 
 # jail_profile_path: the profile file of the current directory, a project
 # under $DEV_PROJECTS (jail_guard checks that first).
@@ -559,11 +561,208 @@ jail_settings() {
     JAIL_RO_PATHS="$JAIL_DEFAULT_RO_PATHS${JAIL_PROFILE_ro_paths:+ $JAIL_PROFILE_ro_paths}"
   [ -n "${JAIL_WATCH_PATHS+set}" ] ||
     JAIL_WATCH_PATHS="$JAIL_DEFAULT_WATCH_PATHS${JAIL_PROFILE_watch_paths:+ $JAIL_PROFILE_watch_paths}"
+  jail_pick JAIL_ALLOWLIST allowlist ""
+  jail_allowlist_build
   JAIL_FLAGS+=(--pids-limit "$JAIL_PIDS" --memory "$JAIL_MEMORY" --memory-swap "$JAIL_MEMORY")
   if [ -n "$JAIL_PROFILE" ]; then
     local set="${JAIL_PROFILE_SET// /, }"
     printf 'Profile: %s (%s)\n' "$JAIL_PROFILE" "${set:-nothing set}" >&2
   fi
+}
+
+# --- Per-project allowlist (claude-jailed) ---
+# 'allowlist' in a project's profile (or JAIL_ALLOWLIST) lets that project's
+# jailed Claude reach more hosts than the strict allowlist, without opening
+# them to every other project the way 'make egress-dev' does. Its value is a
+# space-separated list of:
+#   gitlab.example.com  that host and its subdomains. At least two labels: a
+#                       bare 'com' would open a whole top-level domain.
+#   @dev                the development allowlist (allowlist-dev: Go
+#                       modules, GitHub, npm), for this project only.
+# The strict allowlist (Anthropic) is always included. Domains only, never a
+# regex: the profile cannot hold backslashes, and a domain cannot be written
+# so that it matches more than it says.
+#
+# tinyproxy reads a single filter file, so every distinct allowlist gets its
+# own proxy, $JAIL_PROXY-<first 12 hex of the filter's SHA-256>; projects with
+# the same allowlist share it. claude-jailed creates it when it is missing,
+# from the image 'make egress' built and with the main proxy's hardening; the
+# filter goes in with 'podman cp' before it starts (on macOS the podman
+# machine cannot see ~/.config). It starts it again when it is stopped, and
+# leaves it running for the next launch.
+#
+# Each of these proxies has an internal network of its own,
+# $JAIL_NET_INTERNAL-<the same 12 hex>, and the jails of that allowlist run on
+# it instead of $JAIL_NET_INTERNAL. Containers on one network reach each other
+# by address, so on a shared network a jail could connect to the proxy of
+# another project and leave through that project's allowlist. Here a jail
+# reaches its own proxy and no other. The dependency cache joins the network
+# on the first launch there.
+#
+# 'make egress-prune' removes the proxies no running jail uses, with their
+# networks, and so does 'make egress', so they come back from the new image.
+JAIL_EGRESS_DIR="$JAIL_INFRA/claude-jail/egress-hardening"
+
+# How every egress proxy runs, the main one (setup-egress.sh) and the
+# per-project ones. Its log is the record of every connection ('make
+# egress-log'): capped where podman writes it to a file (journald rotates on
+# its own and ignores the option).
+# The comma belongs to the --userns value.
+# shellcheck disable=SC2054
+JAIL_PROXY_RUN_FLAGS=(
+  --log-opt max-size=10m
+  --userns keep-id:uid=1000,gid=1000
+  --security-opt no-new-privileges
+  --cap-drop ALL
+  --pids-limit 256
+  --memory 256m
+  --memory-swap 256m
+)
+
+# jail_filter_lines FILE: the patterns of an allowlist file, without comments.
+jail_filter_lines() { grep -vE '^[[:space:]]*(#|$)' "$1" || true; }
+
+# jail_ip_on NET CONTAINER: CONTAINER's address on NET; empty when it is not
+# on NET (or does not exist).
+jail_ip_on() {
+  podman container inspect -f "{{with index .NetworkSettings.Networks \"$1\"}}{{.IPAddress}}{{end}}" \
+    "$2" 2>/dev/null || true
+}
+
+# jail_allowlist_build: JAIL_ALLOWLIST checked and turned into a tinyproxy
+# filter, sorted: JAIL_ALLOWLIST_FILTER (empty without an allowlist) and
+# JAIL_ALLOWLIST_HASH. Stops the launch on an entry that is not a domain or
+# @dev. Run by jail_settings, so both launchers refuse a bad one.
+jail_allowlist_build() {
+  local entries entry domain lines label='[a-z0-9]([a-z0-9-]*[a-z0-9])?'
+  local pattern="^($label\\.)+$label\$"
+  JAIL_ALLOWLIST_FILTER="" JAIL_ALLOWLIST_HASH=""
+  [ -n "$JAIL_ALLOWLIST" ] || return 0
+  lines="$(jail_filter_lines "$JAIL_EGRESS_DIR/allowlist")"
+  # read -a, not 'for in $JAIL_ALLOWLIST': no glob expansion of a '*'.
+  read -r -a entries <<<"$JAIL_ALLOWLIST"
+  [ "${#entries[@]}" -gt 0 ] || return 0
+  for entry in "${entries[@]}"; do
+    case "$entry" in
+      @dev)
+        lines="$lines
+$(jail_filter_lines "$JAIL_EGRESS_DIR/allowlist-dev")" ;;
+      @*)
+        jail_die "$JAIL_FROM: unknown set '$entry' in the allowlist; the only one is @dev." ;;
+      *)
+        domain="$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')"
+        [[ $domain =~ $pattern ]] ||
+          jail_die "$JAIL_FROM: '$entry' is not a domain such as gitlab.example.com." \
+            "Each domain also allows its subdomains, so one label alone (com) is refused."
+        lines="$lines
+(^|\\.)$(printf '%s' "$domain" | sed 's/\./\\./g')\$" ;;
+    esac
+  done
+  JAIL_ALLOWLIST_FILTER="$(printf '%s\n' "$lines" | sort -u)"
+  JAIL_ALLOWLIST_HASH="$(printf '%s\n' "$JAIL_ALLOWLIST_FILTER" | jail_sha256 | cut -c1-12)"
+}
+
+# jail_project_proxy: make sure the proxy of this launch's allowlist exists
+# and runs, on its own internal network, and point JAIL_PROXY at it and
+# JAIL_PROXY_NET at that network. claude-jailed calls it when
+# JAIL_ALLOWLIST_FILTER is set.
+jail_project_proxy() {
+  local name="$JAIL_PROXY-$JAIL_ALLOWLIST_HASH" net="$JAIL_NET_INTERNAL-$JAIL_ALLOWLIST_HASH" filter
+  if ! podman container exists "$name" 2>/dev/null; then
+    if ! podman image exists "$JAIL_PROXY_IMAGE" 2>/dev/null ||
+       ! podman network exists "$JAIL_NET_EGRESS" 2>/dev/null; then
+      jail_die "this project's allowlist needs the proxy image and the networks of 'make egress'." \
+        "Run 'make egress' once, then launch again."
+    fi
+    echo ">> Starting $name, the proxy of this project's allowlist (first launch with it)." >&2
+    # No route out and no DNS, like $JAIL_NET_INTERNAL (see setup-egress.sh).
+    # Another launch may be creating it at the same moment.
+    if ! podman network exists "$net" 2>/dev/null &&
+       ! podman network create --internal --disable-dns \
+           --label "dev-infra.proxy-group=$JAIL_PROXY" "$net" >/dev/null &&
+       ! podman network exists "$net" 2>/dev/null; then
+      jail_die "could not create the network $net (see the podman error above)."
+    fi
+    filter="$(mktemp "${TMPDIR:-/tmp}/claude-allowlist.XXXXXX")"
+    {
+      printf '# Made by claude-jailed from: %s\n' "$JAIL_ALLOWLIST"
+      printf '%s\n' "$JAIL_ALLOWLIST_FILTER"
+    } > "$filter"
+    # podman cp keeps the mode, and tinyproxy runs as UID 1000, not root.
+    chmod 644 "$filter"
+    # Egress network first, so its resolv.conf points at that network's DNS
+    # (as in setup-egress.sh); the filter goes in before tinyproxy starts.
+    if podman create --name "$name" "${JAIL_PROXY_RUN_FLAGS[@]}" \
+         --label "dev-infra.proxy-group=$JAIL_PROXY" \
+         --network "$JAIL_NET_EGRESS" "$JAIL_PROXY_IMAGE" >/dev/null; then
+      if ! podman cp "$filter" "$name:/etc/tinyproxy/allowlist" ||
+         ! podman start "$name" >/dev/null ||
+         ! podman network connect "$net" "$name"; then
+        rm -f -- "$filter"
+        podman rm -f "$name" >/dev/null 2>&1 || true
+        jail_die "could not set up the proxy $name (see the podman error above)."
+      fi
+    elif ! podman container exists "$name" 2>/dev/null; then
+      rm -f -- "$filter"
+      jail_die "could not create the proxy $name (see the podman error above)."
+    fi
+    # (create failed but it exists: another launch made it a moment ago.)
+    rm -f -- "$filter"
+  fi
+  # Created but never started: another launch is copying the filter in.
+  # Starting it here could run tinyproxy before the copy, with the filter
+  # baked into the image (maybe the development one), so wait for that launch
+  # instead, and never start one that stays in that state. A stopped one
+  # (after a reboot) has its filter already: it is started again.
+  # JAIL_PROXY_WAIT_TRIES (half seconds, default 20) is for the tests.
+  local tries="${JAIL_PROXY_WAIT_TRIES:-20}" state
+  while :; do
+    state="$(podman container inspect -f '{{.State.Status}}' "$name" 2>/dev/null)"
+    if [ "$state" != created ] || [ "$tries" -le 0 ]; then break; fi
+    tries=$((tries - 1))
+    sleep 0.5
+  done
+  case "$state" in
+    running) ;;
+    created)
+      jail_die "the proxy $name was created but never started (a launch stopped halfway?)." \
+        "Remove it with 'make egress-prune', then launch again." ;;
+    *)
+      podman start "$name" >/dev/null ||
+        jail_die "could not start the proxy $name." "Remove it with 'make egress-prune', then launch again." ;;
+  esac
+  # shellcheck disable=SC2034  # used by launch_claude_jailed.sh
+  JAIL_PROXY="$name" JAIL_PROXY_NET="$net"
+  printf 'Proxy: %s, for this allowlist: %s (make egress-log JAIL_PROXY=%s)\n' \
+    "$name" "$JAIL_ALLOWLIST" "$name" >&2
+}
+
+# jail_prune_proxies: remove the per-project proxies that no running jail
+# uses (each jailed Claude carries a dev-infra.proxy label with its proxy),
+# then the networks whose proxy is gone.
+jail_prune_proxies() {
+  local name net kept=0 removed=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ -n "$(podman ps -q --filter "label=dev-infra.proxy=$name" 2>/dev/null)" ]; then
+      echo "   kept $name: a jailed Claude is using it"
+      kept=$((kept + 1))
+    elif podman rm -f "$name" >/dev/null; then
+      echo "   removed $name"
+      removed=$((removed + 1))
+    fi
+  done < <(podman ps -a --filter "label=dev-infra.proxy-group=$JAIL_PROXY" --format '{{.Names}}' 2>/dev/null)
+  # $JAIL_NET_INTERNAL-<hash> belongs to $JAIL_PROXY-<hash>. The dependency
+  # cache may be on it (claude-jailed connects it): it leaves the network
+  # first, since 'network rm -f' would remove the cache with it.
+  while IFS= read -r net; do
+    [ -n "$net" ] || continue
+    podman container exists "$JAIL_PROXY-${net##*-}" 2>/dev/null && continue
+    podman network disconnect -f "$net" "$JAIL_CACHE" >/dev/null 2>&1 || true
+    podman network rm "$net" >/dev/null 2>&1 ||
+      echo "   kept the network $net: a container is still on it ('podman network inspect $net')"
+  done < <(podman network ls --filter "label=dev-infra.proxy-group=$JAIL_PROXY" --format '{{.Name}}' 2>/dev/null)
+  echo ">> Per-project proxies: $removed removed, $kept still in use."
 }
 
 # Each launcher runs jail_guard, jail_settings, jail_check_volumes and

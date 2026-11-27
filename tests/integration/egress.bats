@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# Integration: jailed mode. A real proxy and real networks (all named
-# claudetest-*), real connections to the internet. JAIL_TEST_OFFLINE=1 skips it.
+# Integration: jailed mode. A real proxy, the per-project ones and real
+# networks (all named claudetest-*), real connections to the internet.
+# JAIL_TEST_OFFLINE=1 skips it.
 
 load helpers
 
@@ -12,6 +13,13 @@ setup_file() {
 }
 
 teardown_file() {
+  local p
+  for p in $(podman ps -aq --filter "label=dev-infra.proxy-group=$JAIL_PROXY" 2>/dev/null); do
+    podman rm -f "$p" >/dev/null 2>&1 || true
+  done
+  for p in $(podman network ls -q --filter "label=dev-infra.proxy-group=$JAIL_PROXY" 2>/dev/null); do
+    podman network rm -f "$p" >/dev/null 2>&1 || true
+  done
   podman rm -f "$JAIL_PROXY" >/dev/null 2>&1 || true
   podman network rm -f "$JAIL_NET_INTERNAL" "$JAIL_NET_EGRESS" >/dev/null 2>&1 || true
   remove_test_volumes
@@ -104,4 +112,98 @@ via_proxy() {
   echo "$output"
   [ "$status" -eq 0 ]
   [[ "$(tail -n 1 <<<"$output")" =~ ^3\. ]]
+}
+
+# --- per-project allowlists ------------------------------------------------------
+
+# project_proxy: the per-project proxy the last jailed launch said it used.
+project_proxy() { sed -nE "s/^Proxy: ($JAIL_PROXY-[0-9a-f]{12}), .*/\1/p" <<<"$output"; }
+
+@test "a project's allowlist gets its own proxy: its domain passes there, and only there" {
+  mkdir -p "$JAIL_PROFILES_DIR"
+  echo 'allowlist = example.com' > "$JAIL_PROFILES_DIR/svc.conf"
+  via_proxy example.com:443
+  echo "$output"
+  contains "$output" " 200 "
+  local name; name="$(project_proxy)"
+  [ -n "$name" ]
+  [ "$(podman container inspect -f '{{.State.Running}}' "$name")" = true ]
+  via_proxy api.anthropic.com:443
+  contains "$output" " 200 "
+  via_proxy github.com:443
+  contains "$output" " 403 "
+
+  # Another project, without the profile: the main proxy, which refuses it.
+  mkdir -p "$DEV_PROJECTS/other"
+  PROJ="$DEV_PROJECTS/other" via_proxy example.com:443
+  contains "$output" " 403 "
+  not grep -q '^Proxy:' <<<"$output"
+}
+
+# ip_on NET CONTAINER: its address on NET, empty when it is not on it.
+ip_on() { podman container inspect -f "{{with index .NetworkSettings.Networks \"$1\"}}{{.IPAddress}}{{end}}" "$2"; }
+
+@test "a jail reaches its own proxy and no other: each per-project proxy has a network of its own" {
+  mkdir -p "$JAIL_PROFILES_DIR"
+  echo 'allowlist = example.com' > "$JAIL_PROFILES_DIR/svc.conf"
+  jail_jailed true
+  [ "$status" -eq 0 ]
+  local name; name="$(project_proxy)"
+  [ -n "$name" ]
+  local net="$JAIL_NET_INTERNAL-${name##*-}" own main
+  own="$(ip_on "$net" "$name")"
+  main="$(ip_on "$JAIL_NET_INTERNAL" "$JAIL_PROXY")"
+  [ -n "$own" ] && [ -n "$main" ]
+  [ -z "$(ip_on "$JAIL_NET_INTERNAL" "$name")" ]
+
+  # Control: the project's jail connects to its own proxy by address.
+  jail_jailed timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/8888"' _ "$own"
+  [ "$status" -eq 0 ]
+  # Not to the main proxy...
+  jail_jailed timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/8888"' _ "$main"
+  [ "$status" -ne 0 ]
+  # ...and a jail on the main network cannot use the project's proxy.
+  mkdir -p "$DEV_PROJECTS/other"
+  PROJ="$DEV_PROJECTS/other" jail_jailed timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/8888"' _ "$own"
+  [ "$status" -ne 0 ]
+}
+
+@test "@dev opens the development allowlist to that project only" {
+  mkdir -p "$JAIL_PROFILES_DIR"
+  echo 'allowlist = @dev' > "$JAIL_PROFILES_DIR/svc.conf"
+  via_proxy github.com:443
+  contains "$output" " 200 "
+  via_proxy example.com:443
+  contains "$output" " 403 "
+}
+
+@test "make egress-prune keeps a proxy a running jail uses, and removes it once no jail does" {
+  mkdir -p "$JAIL_PROFILES_DIR"
+  echo 'allowlist = example.org' > "$JAIL_PROFILES_DIR/svc.conf"
+  jail_jailed true
+  [ "$status" -eq 0 ]
+  local name; name="$(project_proxy)"
+  [ -n "$name" ]
+
+  ( cd "$PROJ" && exec "$REPO/claude-jail/egress-hardening/launch_claude_jailed.sh" sleep 30 ) >/dev/null 2>&1 &
+  local jail=$!
+  local _
+  for _ in $(seq 40); do
+    [ -n "$(podman ps -q --filter "label=dev-infra.proxy=$name")" ] && break
+    sleep 0.5
+  done
+  run "$REPO/claude-jail/egress-hardening/prune-proxies.sh"
+  echo "$output"
+  contains "$output" "kept $name"
+  podman container exists "$name"
+
+  podman ps -q --filter "label=dev-infra.proxy=$name" | xargs podman stop -t 1 >/dev/null
+  wait "$jail" || true
+  run "$REPO/claude-jail/egress-hardening/prune-proxies.sh"
+  echo "$output"
+  contains "$output" "removed $name"
+  not podman container exists "$name"
+  not podman network exists "$JAIL_NET_INTERNAL-${name##*-}"
+  # The main proxy is never pruned.
+  podman container exists "$JAIL_PROXY"
 }

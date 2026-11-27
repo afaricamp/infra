@@ -41,7 +41,8 @@ section() {
   grep 'github.com:443' <<<"$denied" | grep -qF '(make egress-dev allows it)'
   grep -q 'example.com:443' <<<"$denied"
   not grep -q 'example.com:443.*make' <<<"$denied"
-  contains "$output" "add it to claude-jail/egress-hardening/allowlist"
+  contains "$output" "add it to 'allowlist' in that"
+  contains "$output" "claude-jail/egress-hardening/allowlist (one extended regex per line)"
   contains "$output" "work with the strict allowlist once the dependency cache runs"
   contains "$output" "The ones marked 'make egress-dev' are in allowlist-dev"
 }
