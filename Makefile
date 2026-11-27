@@ -220,9 +220,10 @@ egress-log: ## What the egress proxy allowed and denied, per domain (SINCE=1h, F
 	   $${since:+--since "$$since"} $(if $(FOLLOW),--follow)
 
 # Projects with an allowlist in their profile get a proxy of their own
-# (claude-proxy-<hash>), which stays up for the next launch.
+# (claude-proxy-<hash>) on a network of its own, which stay up for the next
+# launch. JAIL_CACHE: the cache leaves those networks before they go.
 egress-prune: ## Remove the per-project proxies that no running claude-jailed uses
-	@JAIL_PROXY="$(JAIL_PROXY)" "$(CLAUDE_JAIL)/egress-hardening/prune-proxies.sh"
+	@JAIL_PROXY="$(JAIL_PROXY)" JAIL_CACHE="$(JAIL_CACHE)" "$(CLAUDE_JAIL)/egress-hardening/prune-proxies.sh"
 
 # Go modules and npm packages for claude-jailed, through a cache that sits on
 # the proxy's two networks: the strict allowlist is then enough to build. The

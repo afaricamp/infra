@@ -11,7 +11,8 @@
 #                       (default 10.89.0.2; set it empty for "not attached")
 #   STUB_CACHE_RUNNING  the same two, for the dependency cache ($JAIL_CACHE,
 #   STUB_CACHE_IP       default claude-cache; 10.89.0.3). Unset: no cache.
-#   STUB_NETWORKS       space-separated networks that "exist"
+#   STUB_NETWORKS       space-separated networks that "exist" (also the ones
+#                       'network create' made: STUB_LOG.netcreated)
 #   STUB_NET_DNS        answer to 'network inspect -f {{.DNSEnabled}}' (default false)
 #   STUB_NET_RM_FAIL    set to make 'network rm' fail (a container still uses it)
 #   STUB_LOG.removed    networks removed so far; they no longer "exist"
@@ -49,9 +50,15 @@
 #   STUB_PROXIES_IN_USE   the ones a running jail uses ('ps -q --filter
 #                         label=dev-infra.proxy=<name>' answers for them)
 #   STUB_CREATE_FAIL      set: 'create' fails
+#   STUB_PROJECT_NETS     what 'network ls --filter label=dev-infra.proxy-group=...'
+#                         lists: their internal networks
 #   'create' adds the name to STUB_LOG.created and its arguments to
 #   STUB_LOG.create; 'start' adds to STUB_LOG.started; 'cp' copies its source
-#   to STUB_LOG.cp and its mode to STUB_LOG.cp.mode.
+#   to STUB_LOG.cp and its mode to STUB_LOG.cp.mode; 'rm -f' adds to
+#   STUB_LOG.rmed, after which they no longer exist.
+#   'network connect NET NAME' adds "NET NAME" to STUB_LOG.connected. The
+#   cache is on $JAIL_NET_INTERNAL (default jail-internal) and on the
+#   networks it was connected to.
 log="${STUB_LOG:-/dev/null}"
 printf '%s\n' "$*" >> "$log"
 last="${*: -1}"
@@ -64,6 +71,7 @@ volume_exists() {
 project_proxy() { [[ $1 =~ -[0-9a-f]{12}$ ]]; }
 listed() { grep -qxF -- "$1" "$log.$2" 2>/dev/null; }
 pp_exists() {
+  listed "$1" rmed && return 1
   case " ${STUB_PROJECT_PROXIES:-} " in *" $1 "*) return 0 ;; esac
   listed "$1" created
 }
@@ -72,6 +80,11 @@ pp_running() {
   case " ${STUB_PROJECT_PROXIES:-} " in *" $1 "*) [ -z "${STUB_PROJECT_STOPPED:-}" ] ;; *) return 1 ;; esac
 }
 record() { [ "$log" = /dev/null ] || printf '%s\n' "$2" >> "$log.$1"; }
+# asked_net: the network in a '{{... .NetworkSettings.Networks "NET" ...}}' template.
+asked_net() { sed -n 's/.*Networks "\([^"]*\)".*/\1/p' <<<"$*"; }
+cache_on() {
+  [ "$1" = "${JAIL_NET_INTERNAL:-jail-internal}" ] || listed "$1 ${JAIL_CACHE:-claude-cache}" connected
+}
 
 case "$1 ${2:-}" in
   "volume inspect")
@@ -95,7 +108,7 @@ case "$1 ${2:-}" in
     if [ "$last" = "${JAIL_CACHE:-claude-cache}" ]; then
       [ -n "${STUB_CACHE_RUNNING:-}" ] || exit 125
       case "$*" in
-        *IPAddress*) echo "${STUB_CACHE_IP-10.89.0.3}" ;;
+        *IPAddress*) if cache_on "$(asked_net "$*")"; then echo "${STUB_CACHE_IP-10.89.0.3}"; else echo; fi ;;
         *) echo "$STUB_CACHE_RUNNING" ;;
       esac
       exit 0
@@ -143,13 +156,25 @@ case "$1 ${2:-}" in
   "network exists")
     grep -qxF -- "$last" "$log.removed" 2>/dev/null && exit 1
     case " ${STUB_NETWORKS:-} " in *" $last "*) exit 0 ;; esac
-    exit 1 ;;
+    listed "$last" netcreated ;;
+  "network ls")
+    case "$*" in
+      *"label=dev-infra.proxy-group="*)
+        for net in ${STUB_PROJECT_NETS:-}; do listed "$net" removed || echo "$net"; done ;;
+    esac ;;
   "network inspect")
     echo "${STUB_NET_DNS:-false}" ;;
   "network rm")
     [ -z "${STUB_NET_RM_FAIL:-}" ] || exit 2
     [ "$log" = /dev/null ] || printf '%s\n' "$last" >> "$log.removed" ;;
-  "network create"|"network connect"|build\ *|"rm -f")
+  "network create")
+    record netcreated "$last" ;;
+  "network connect")
+    record connected "$3 $4" ;;
+  "rm -f")
+    shift 2
+    for name in "$@"; do record rmed "$name"; done ;;
+  "network disconnect"|build\ *)
     ;;
   create\ *)
     [ -z "${STUB_CREATE_FAIL:-}" ] || { echo "Error: creating container storage: the stub says no" >&2; exit 125; }

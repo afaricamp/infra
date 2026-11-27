@@ -17,6 +17,9 @@ teardown_file() {
   for p in $(podman ps -aq --filter "label=dev-infra.proxy-group=$JAIL_PROXY" 2>/dev/null); do
     podman rm -f "$p" >/dev/null 2>&1 || true
   done
+  for p in $(podman network ls -q --filter "label=dev-infra.proxy-group=$JAIL_PROXY" 2>/dev/null); do
+    podman network rm -f "$p" >/dev/null 2>&1 || true
+  done
   podman rm -f "$JAIL_PROXY" >/dev/null 2>&1 || true
   podman network rm -f "$JAIL_NET_INTERNAL" "$JAIL_NET_EGRESS" >/dev/null 2>&1 || true
   remove_test_volumes
@@ -137,6 +140,34 @@ project_proxy() { sed -nE "s/^Proxy: ($JAIL_PROXY-[0-9a-f]{12}), .*/\1/p" <<<"$o
   not grep -q '^Proxy:' <<<"$output"
 }
 
+# ip_on NET CONTAINER: its address on NET, empty when it is not on it.
+ip_on() { podman container inspect -f "{{with index .NetworkSettings.Networks \"$1\"}}{{.IPAddress}}{{end}}" "$2"; }
+
+@test "a jail reaches its own proxy and no other: each per-project proxy has a network of its own" {
+  mkdir -p "$JAIL_PROFILES_DIR"
+  echo 'allowlist = example.com' > "$JAIL_PROFILES_DIR/svc.conf"
+  jail_jailed true
+  [ "$status" -eq 0 ]
+  local name; name="$(project_proxy)"
+  [ -n "$name" ]
+  local net="$JAIL_NET_INTERNAL-${name##*-}" own main
+  own="$(ip_on "$net" "$name")"
+  main="$(ip_on "$JAIL_NET_INTERNAL" "$JAIL_PROXY")"
+  [ -n "$own" ] && [ -n "$main" ]
+  [ -z "$(ip_on "$JAIL_NET_INTERNAL" "$name")" ]
+
+  # Control: the project's jail connects to its own proxy by address.
+  jail_jailed timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/8888"' _ "$own"
+  [ "$status" -eq 0 ]
+  # Not to the main proxy...
+  jail_jailed timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/8888"' _ "$main"
+  [ "$status" -ne 0 ]
+  # ...and a jail on the main network cannot use the project's proxy.
+  mkdir -p "$DEV_PROJECTS/other"
+  PROJ="$DEV_PROJECTS/other" jail_jailed timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/8888"' _ "$own"
+  [ "$status" -ne 0 ]
+}
+
 @test "@dev opens the development allowlist to that project only" {
   mkdir -p "$JAIL_PROFILES_DIR"
   echo 'allowlist = @dev' > "$JAIL_PROFILES_DIR/svc.conf"
@@ -172,6 +203,7 @@ project_proxy() { sed -nE "s/^Proxy: ($JAIL_PROXY-[0-9a-f]{12}), .*/\1/p" <<<"$o
   echo "$output"
   contains "$output" "removed $name"
   not podman container exists "$name"
+  not podman network exists "$JAIL_NET_INTERNAL-${name##*-}"
   # The main proxy is never pruned.
   podman container exists "$JAIL_PROXY"
 }

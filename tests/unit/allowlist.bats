@@ -46,11 +46,17 @@ line_of() { grep -nxF -- "$1" "$STUB_LOG" | head -n 1 | cut -d: -f1; }
   has_pair "$create" --label dev-infra.proxy-group=claude-proxy
   [ "$(tail -n 1 <<<"$create")" = claude-egress-proxy ]
 
-  # The filter goes in before tinyproxy starts; the internal network comes last.
+  # Its own internal network, made first, with no route out and no DNS.
+  local net="jail-internal-${name##*-}"
+  local mknet="network create --internal --disable-dns --label dev-infra.proxy-group=claude-proxy $net"
+  [ -n "$(line_of "$mknet")" ]
+  [ "$(line_of "$mknet")" -lt "$(line_of "start $name")" ]
+  # The filter goes in before tinyproxy starts; that network comes last.
   local cp_line; cp_line="$(grep -n "^cp .* $name:/etc/tinyproxy/allowlist\$" "$STUB_LOG" | cut -d: -f1)"
   [ -n "$cp_line" ]
   [ "$cp_line" -lt "$(line_of "start $name")" ]
-  [ "$(line_of "start $name")" -lt "$(line_of "network connect jail-internal $name")" ]
+  [ "$(line_of "start $name")" -lt "$(line_of "network connect $net $name")" ]
+  not grep -qx "network connect jail-internal $name" "$STUB_LOG"
 
   grep -qxF '(^|\.)anthropic\.com$' "$STUB_LOG.cp"
   grep -qxF '(^|\.)gitlab\.example\.com$' "$STUB_LOG.cp"
@@ -59,7 +65,10 @@ line_of() { grep -nxF -- "$1" "$STUB_LOG" | head -n 1 | cut -d: -f1; }
   # tinyproxy runs as UID 1000, and podman cp keeps the mode.
   [ "$(cat "$STUB_LOG.cp.mode")" = "-rw-r--r--" ]
 
+  # The jail runs on that network, not on the one of the main proxy.
   local args; args="$(run_args)"
+  has_pair "$args" --network "$net"
+  not has_pair "$args" --network jail-internal
   has_pair "$args" --add-host "$name:10.89.0.4"
   has_pair "$args" -e "HTTPS_PROXY=http://$name:8888"
   has_pair "$args" --label "dev-infra.proxy=$name"
@@ -123,11 +132,11 @@ line_of() { grep -nxF -- "$1" "$STUB_LOG" | head -n 1 | cut -d: -f1; }
 
 @test "allowlist: without the image or the networks of 'make egress', it says so and creates nothing" {
   echo 'allowlist = gitlab.example.com' > "$PROFILE"
-  export STUB_NETWORKS="jail-egress"
+  export STUB_NETWORKS="jail-internal"
   launch_jailed
   [ "$status" -eq 1 ]
   contains "$output" "Run 'make egress' once"
-  not grep -q '^create ' "$STUB_LOG"
+  not grep -q '^create \|^network create ' "$STUB_LOG"
   not podman_ran
 
   export STUB_NETWORKS="jail-internal jail-egress" STUB_IMAGE_EXISTS=1
@@ -166,6 +175,32 @@ line_of() { grep -nxF -- "$1" "$STUB_LOG" | head -n 1 | cut -d: -f1; }
   not podman_ran
 }
 
+@test "allowlist: the dependency cache joins the network of the project's proxy, on the first launch there" {
+  echo 'allowlist = gitlab.example.com' > "$PROFILE"
+  export STUB_CACHE_RUNNING=true
+  launch_jailed
+  [ "$status" -eq 0 ]
+  local name net; name="$(proxy_name)"; net="jail-internal-${name##*-}"
+  grep -qx "network connect $net claude-cache" "$STUB_LOG"
+  local args; args="$(run_args)"
+  has_pair "$args" --add-host claude-cache:10.89.0.3
+  has_pair "$args" -e GOPROXY=http://claude-cache:3000,direct
+  has_pair "$args" -e NO_PROXY=localhost,127.0.0.1,claude-cache
+
+  # Already there: not connected again.
+  launch_jailed
+  [ "$status" -eq 0 ]
+  [ "$(grep -cx "network connect $net claude-cache" "$STUB_LOG")" -eq 1 ]
+  has_pair "$(run_args)" --add-host claude-cache:10.89.0.3
+
+  # One that does not get an address there is a note, as on the main network.
+  export STUB_CACHE_IP=
+  launch_jailed
+  [ "$status" -eq 0 ]
+  contains "$output" "is stopped or not on $net"
+  not grep -q GOPROXY <<<"$(run_args)"
+}
+
 @test "allowlist: JAIL_ALLOWLIST wins over the profile; claude-jail ignores the allowlist" {
   echo 'allowlist = gitlab.example.com' > "$PROFILE"
   JAIL_ALLOWLIST=other.example.net launch_jailed
@@ -191,9 +226,11 @@ line_of() { grep -nxF -- "$1" "$STUB_LOG" | head -n 1 | cut -d: -f1; }
 
 # --- make egress-prune ----------------------------------------------------------------
 
-@test "make egress-prune: removes the per-project proxies no jail uses, keeps the others and the main proxy" {
+@test "make egress-prune: removes the per-project proxies no jail uses and their networks, keeps the others and the main proxy" {
   export STUB_PROJECT_PROXIES="claude-proxy-aaaaaaaaaaaa claude-proxy-bbbbbbbbbbbb"
   export STUB_PROXIES_IN_USE="claude-proxy-bbbbbbbbbbbb"
+  # cccc...: a network whose proxy is already gone.
+  export STUB_PROJECT_NETS="jail-internal-aaaaaaaaaaaa jail-internal-bbbbbbbbbbbb jail-internal-cccccccccccc"
   run make_repo egress-prune
   [ "$status" -eq 0 ]
   grep -q -- '--filter label=dev-infra.proxy-group=claude-proxy ' "$STUB_LOG"
@@ -202,12 +239,33 @@ line_of() { grep -nxF -- "$1" "$STUB_LOG" | head -n 1 | cut -d: -f1; }
   not grep -qx 'rm -f claude-proxy' "$STUB_LOG"
   contains "$output" "kept claude-proxy-bbbbbbbbbbbb: a jailed Claude is using it"
   contains "$output" "1 removed, 1 still in use"
+
+  # The proxy goes first, then the cache leaves its network, then the network.
+  [ "$(line_of 'rm -f claude-proxy-aaaaaaaaaaaa')" -lt "$(line_of 'network disconnect -f jail-internal-aaaaaaaaaaaa claude-cache')" ]
+  [ "$(line_of 'network disconnect -f jail-internal-aaaaaaaaaaaa claude-cache')" -lt "$(line_of 'network rm jail-internal-aaaaaaaaaaaa')" ]
+  grep -qx 'network rm jail-internal-cccccccccccc' "$STUB_LOG"
+  not grep -q 'jail-internal-bbbbbbbbbbbb' <<<"$(grep '^network \(rm\|disconnect\)' "$STUB_LOG")"
+  not grep -qx 'network rm jail-internal' "$STUB_LOG"
 }
 
-@test "make egress-prune: follows JAIL_PROXY, and nothing to prune is fine" {
+@test "make egress-prune: a network something is still on is kept, with a note" {
+  export STUB_PROJECT_NETS="jail-internal-aaaaaaaaaaaa" STUB_NET_RM_FAIL=1
+  run make_repo egress-prune
+  [ "$status" -eq 0 ]
+  contains "$output" "kept the network jail-internal-aaaaaaaaaaaa: a container is still on it"
+}
+
+@test "make egress-prune: follows JAIL_PROXY and JAIL_CACHE, and nothing to prune is fine" {
   run make_repo egress-prune JAIL_PROXY=p1
   [ "$status" -eq 0 ]
   grep -q -- '--filter label=dev-infra.proxy-group=p1 ' "$STUB_LOG"
-  not grep -q '^rm ' "$STUB_LOG"
+  not grep -q '^rm \|^network rm ' "$STUB_LOG"
   contains "$output" "0 removed, 0 still in use"
+
+  export STUB_PROJECT_NETS="n1-aaaaaaaaaaaa"
+  run make_repo egress-prune JAIL_PROXY=p1 JAIL_CACHE=c9
+  [ "$status" -eq 0 ]
+  grep -q -- 'network ls --filter label=dev-infra.proxy-group=p1 ' "$STUB_LOG"
+  grep -qx 'network disconnect -f n1-aaaaaaaaaaaa c9' "$STUB_LOG"
+  grep -qx 'network rm n1-aaaaaaaaaaaa' "$STUB_LOG"
 }
