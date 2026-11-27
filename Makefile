@@ -22,6 +22,7 @@ override SINCE   := $(value SINCE)
 override FOLLOW  := $(value FOLLOW)
 override NAME    := $(value NAME)
 override MCP     := $(value MCP)
+override VARIANT := $(value VARIANT)
 
 CLAUDE_JAIL   := $(CURDIR)/claude-jail
 DEVCONTAINERS := $(CURDIR)/devcontainers
@@ -34,6 +35,7 @@ OS            := $(shell uname -s)
 # Same names and defaults as claude-jail/common.sh; the integration tests
 # override them from the environment so they never touch your real setup.
 JAIL_IMAGE         ?= localhost/claude-jail:latest
+JAIL_VARIANTS      := full go node php
 JAIL_VOLUME_PREFIX ?= claude
 JAIL_VOLUMES       := $(addprefix $(JAIL_VOLUME_PREFIX)-,home gopath gocache)
 JAIL_PROXY         ?= claude-proxy
@@ -66,7 +68,7 @@ DC_TYPES      := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(DEVCONTAINER
 # '$(...)' inside them (even run '$(shell ...)') when it references or exports
 # them, so they are never exported and only read raw, through $(value), and
 # single-quoted for the shell: a path is just a path.
-unexport PROJECT TYPE FORCE SRC NAME MCP
+unexport PROJECT TYPE FORCE SRC NAME MCP VARIANT
 shquote = '$(subst ','\'',$(value $(1)))'
 
 # Tests and linters. Linters and the unit tests run in containers so nothing
@@ -197,11 +199,27 @@ force-download-claude: ## Always re-download the native binary and check it agai
 	@CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" "$(CURDIR)/claude-jail/check-claude-bin.sh"
 	@echo ">> Done: $(CLAUDE_JAIL)/claude-bin"
 
-build: build-claude build-go build-php build-react build-vue ## Build all five images
+build: build-claude build-go build-php build-react build-vue ## Build every image: the four jail variants and the four dev containers
 
-build-claude: ## Build the Claude jail image (refuses an unchecked, changed or wrong-architecture binary)
+# The jail image's variants: full (Go and Node, JAIL_IMAGE itself), go, node
+# and php, one Containerfile. A project picks one with 'image' in its profile.
+# The others get the variant in their name, as jail_variant_image in
+# claude-jail/common.sh does: localhost/claude-jail:latest ->
+# localhost/claude-jail-php:latest. VARIANT=<name> builds only that one.
+build-claude: ## Build the Claude jail images: full, go, node, php, or VARIANT=<one> (refuses an unchecked, changed or wrong-architecture binary)
 	@CLAUDE_BIN_DIR="$(CLAUDE_JAIL)" "$(CURDIR)/claude-jail/check-claude-bin.sh"
-	podman build -t $(JAIL_IMAGE) "$(CLAUDE_JAIL)"
+	@variants=$(call shquote,VARIANT); [ -n "$$variants" ] || variants="$(JAIL_VARIANTS)"; \
+	 for v in $$variants; do \
+	   case " $(JAIL_VARIANTS) " in *" $$v "*) ;; *) echo "ERROR: unknown VARIANT '$$v'. Available: $(JAIL_VARIANTS)"; exit 1;; esac; \
+	 done; \
+	 for v in $$variants; do \
+	   img="$(JAIL_IMAGE)"; \
+	   if [ "$$v" != full ]; then \
+	     tag=""; case "$${img##*/}" in *:*) tag=":$${img##*:}"; img="$${img%:*}";; esac; img="$$img-$$v$$tag"; \
+	   fi; \
+	   echo ">> $$v: $$img"; \
+	   podman build --build-arg VARIANT=$$v -t "$$img" "$(CLAUDE_JAIL)" || exit 1; \
+	 done
 
 # The dev container images pin their user to UID 1000 (no --build-arg with
 # your UID): the devcontainer.json files map your host user onto 1000.
@@ -485,6 +503,8 @@ test-integration: ## Level 3: real rootless podman (TESTS=<files> to pick, needs
 	$(or $(BATS),bats) --timing $(TESTS)
 
 clean-images: ## Remove the built images (leaves volumes and data alone)
+	-@img="$(JAIL_IMAGE)"; tag=""; case "$${img##*/}" in *:*) tag=":$${img##*:}"; img="$${img%:*}";; esac; \
+	 for v in go node php; do podman image exists "$$img-$$v$$tag" && podman rmi "$$img-$$v$$tag"; done; true
 	-podman rmi $(JAIL_IMAGE) $(JAIL_PROXY_IMAGE) $(JAIL_CACHE_IMAGE) \
 	  localhost/devcontainer-go:latest localhost/devcontainer-php:latest \
 	  localhost/devcontainer-react:latest localhost/devcontainer-vue:latest \

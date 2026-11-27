@@ -17,6 +17,7 @@
 #   STUB_NET_RM_FAIL    set to make 'network rm' fail (a container still uses it)
 #   STUB_LOG.removed    networks removed so far; they no longer "exist"
 #   STUB_IMAGE_EXISTS   exit status of 'image exists' (default 0)
+#   STUB_IMAGES_MISSING space-separated images that 'image exists' says are not there
 #   The volume check ('podman run ... --entrypoint stat ... /check/<vol>')
 #   is answered here and logged to STUB_LOG.check, not STUB_LOG.run:
 #   STUB_OWNER          owner of each volume inside the jail (default 1000, you)
@@ -157,6 +158,7 @@ case "$1 ${2:-}" in
       *) echo "$STUB_PROXY_RUNNING" ;;
     esac ;;
   "image exists")
+    case " ${STUB_IMAGES_MISSING:-} " in *" $last "*) exit 1 ;; esac
     exit "${STUB_IMAGE_EXISTS:-0}" ;;
   "info --format")
     case "$3" in

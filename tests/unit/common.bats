@@ -1,11 +1,13 @@
 #!/usr/bin/env bats
 # Unit tests for claude-jail/common.sh: guards, mounts, flags and the volume
-# check. No podman: the volume check runs against a fake one.
+# check. No podman: everything runs against the fake one (jail_settings asks
+# it whether the image is built).
 
 load helpers
 
 setup() {
   setup_projects
+  use_stubs
 }
 
 # guard DIR [COMMON]: run jail_guard from DIR.

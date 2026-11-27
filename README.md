@@ -20,7 +20,7 @@ Infrastructure for running **Claude Code** and the **JetBrains IDEs** (GoLand, P
 ├── doctor.sh                   # 'make doctor'
 ├── bump-images.sh              # 'make bump-images': pins the base images by digest
 ├── claude-jail/
-│   ├── Containerfile
+│   ├── Containerfile           # the jail image, in four variants: full, go, node, php
 │   ├── claude-bin              # binary, produced by 'make download-claude'; gitignored
 │   ├── common.sh               # flags/guards shared by both launchers
 │   ├── launch_claude.sh
@@ -90,8 +90,9 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make download-claude` | Download the Claude binary **without touching the host**, check it against the release manifest, and **only if missing** |
 | `make force-download-claude` | Re-download and re-check the binary even if it is already there |
 | `make update-claude` | `force-download-claude` + `build-claude` |
-| `make build` | Build all five images |
-| `make build-claude` / `build-go` / `build-php` / `build-react` / `build-vue` | Build a single image |
+| `make build` | Build every image: the four jail variants and the four dev containers |
+| `make build-claude [VARIANT=full\|go\|node\|php]` | Build the jail images: all four variants, or only the one given (see [Image variants](#image-variants)) |
+| `make build-go` / `build-php` / `build-react` / `build-vue` | Build a single dev container image |
 | `make egress` | Egress proxy with the **strict** allowlist (Anthropic only) |
 | `make egress-dev` | Same, but also allowing Go modules, GitHub and npm, for every project (for one project: `allowlist = @dev` in its profile) |
 | `make egress-log [SINCE=1h] [FOLLOW=1]` | What the proxy allowed and denied, per domain with counts; `FOLLOW=1` shows each connection as it happens (see [What the proxy let through](#what-the-proxy-let-through)) |
@@ -104,7 +105,7 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make aliases` | Copy `dev.sh` and hook it into `~/.bashrc` |
 | `make devcontainer PROJECT=<path> TYPE=go\|php\|react\|vue` | Copy the `devcontainer.json` into the given project (`FORCE=1` to overwrite an existing one) |
 | `make ai-sessions PROJECT=<path>` | Add `.ai-sessions/` (local AI session notes, gitignored except its README) to a project. `newproj-*` does it for you; `FORCE=1` replaces the README with the current template |
-| `make profile PROJECT=<path>` | Write a settings file for one project, outside it, with every key commented out (memory, pids, network, more read-only and watched paths, hosts and MCP servers for `claude-jailed`; see [Per-project settings](#per-project-settings)). An existing one is kept |
+| `make profile PROJECT=<path>` | Write a settings file for one project, outside it, with every key commented out (memory, pids, network, more read-only and watched paths, hosts and MCP servers for `claude-jailed`, the image variant; see [Per-project settings](#per-project-settings)). An existing one is kept |
 | `make secrets PROJECT=<path>` / `make secrets MCP=<name>` | A private file on the host for the secrets of a project's dev container (and the line in its `devcontainer.json` that loads it) or of an MCP server. The Claude jail never gets them (see [Secrets](#secrets)) |
 | `make personal-skills [SRC=<dir>]` | Copy your own Claude skills (`~/.claude/skills` by default) to `personal-skills/`, which the jail loads read-only (see [Skills](#skills)) |
 | `make fix-volumes` | Repair ownership and SELinux labels of the Claude volumes (see [Troubleshooting](#troubleshooting)) |
@@ -173,11 +174,13 @@ watch_paths = Taskfile.yml deploy
 allowlist = gitlab.example.com @dev
 # claude-jailed only: MCP servers started with 'make mcp-up NAME=context7'.
 mcp = context7
+# The jail image: full (the default), go, node or php.
+image = php
 ```
 
-The file's name is the project's path under `$DEV_PROJECTS`, so `acme/api` and `acme/web` have their own. Both launchers read it when they start and print `Profile: <file> (memory, pids, ...)`. It is parsed, never run by a shell: one `key = value` per line, `#` lines are comments, values are taken literally (no quotes, `$` or backslashes). An unknown key, a key set twice or a value that is not valid (a size such as `8g`, a whole number of processes, `pasta` or `slirp4netns`, a path that stays in the project, a domain, a server name) stops the launch with the file and the line, so a typo does not leave the default in place unnoticed.
+The file's name is the project's path under `$DEV_PROJECTS`, so `acme/api` and `acme/web` have their own. Both launchers read it when they start and print `Profile: <file> (memory, pids, ...)`. It is parsed, never run by a shell: one `key = value` per line, `#` lines are comments, values are taken literally (no quotes, `$` or backslashes). An unknown key, a key set twice or a value that is not valid (a size such as `8g`, a whole number of processes, `pasta` or `slirp4netns`, a path that stays in the project, a domain, a server name, a variant) stops the launch with the file and the line, so a typo does not leave the default in place unnoticed.
 
-`ro_paths` and `watch_paths` are added to the default lists: a profile can protect more files, never fewer, and a path added to the defaults later covers projects that have a profile too. Environment variables win over the profile: `JAIL_MEMORY`, `JAIL_PIDS`, `JAIL_NETWORK`, `JAIL_ALLOWLIST` and `JAIL_MCP_SERVERS` for one launch, and `JAIL_RO_PATHS` and `JAIL_WATCH_PATHS` still replace their whole list. `JAIL_PROFILES_DIR` moves the folder; a folder or a profile inside `$DEV_PROJECTS` (or a symlink into it) is refused.
+`ro_paths` and `watch_paths` are added to the default lists: a profile can protect more files, never fewer, and a path added to the defaults later covers projects that have a profile too. Environment variables win over the profile: `JAIL_MEMORY`, `JAIL_PIDS`, `JAIL_NETWORK`, `JAIL_ALLOWLIST`, `JAIL_MCP_SERVERS` and `JAIL_VARIANT` for one launch, and `JAIL_RO_PATHS` and `JAIL_WATCH_PATHS` still replace their whole list. `JAIL_PROFILES_DIR` moves the folder; a folder or a profile inside `$DEV_PROJECTS` (or a symlink into it) is refused.
 
 #### A project's own allowlist
 
@@ -201,9 +204,24 @@ Each of these proxies has an internal network of its own, `jail-internal-<hash>`
 | MCP servers from `make mcp-up` (`mcp =` in the profile) | no | yes | yes | yes |
 | Direct route to the internet | yes | no | no | no |
 
-The jail image ships the Go toolchain and Node 24 (npm, plus pnpm and yarn through corepack), so Claude can run the type checks, linters and tests of Go, React and Vue projects. With the strict allowlist alone, `go mod download`, `npm install` and corepack's first download of pnpm or yarn fail, because `proxy.golang.org`, `sum.golang.org` and `registry.npmjs.org` are not on it. The dependency cache (`make caches`, below) fixes that without adding them. `git clone` needs `github.com`: only `make egress-dev` allows it (see the security trade-off documented in `allowlist-dev`).
+The default jail image ships the Go toolchain and Node 24 (npm, plus pnpm and yarn through corepack), so Claude can run the type checks, linters and tests of Go, React and Vue projects; a PHP project picks the `php` variant (see [Image variants](#image-variants)). With the strict allowlist alone, `go mod download`, `npm install` and corepack's first download of pnpm or yarn fail, because `proxy.golang.org`, `sum.golang.org` and `registry.npmjs.org` are not on it. The dependency cache (`make caches`, below) fixes that without adding them. `git clone` needs `github.com`: only `make egress-dev` allows it (see the security trade-off documented in `allowlist-dev`).
 
 For Node projects, install the dependencies in the dev container (see the security note on lifecycle scripts) and let Claude use that `node_modules`: the project directory is shared, and the jail and the dev containers run the same Node major, so native modules load in both. Keep the three `node:` tags in step when you change one. npm's cache lives in `~/.cache/npm`, inside the `claude-gocache` volume, so it survives between sessions like the Go build cache.
+
+### Image variants
+
+The jail image comes in four variants, built from one Containerfile by `make build-claude` (`VARIANT=php` builds just that one). A project picks one with `image` in its profile, or `JAIL_VARIANT=<name>` for one launch:
+
+| `image =` | Image | What Claude can run |
+|---|---|---|
+| `full` (default) | `localhost/claude-jail:latest` | Go and Node 24: Go, React, Vue, and a monorepo with both |
+| `go` | `localhost/claude-jail-go:latest` | Go only |
+| `node` | `localhost/claude-jail-node:latest` | Node 24 only (npm, pnpm and yarn through corepack) |
+| `php` | `localhost/claude-jail-php:latest` | PHP 8.4 with zip and Composer, from the same images as the `php` dev container |
+
+Each variant has the toolchain its dev containers have (`tests/static/policy.sh` checks the PHP image, the Composer image and the Node major), because Claude runs the tests against the `node_modules` or `vendor/` the dev container installed. All four share the jail's hardening and its volumes: each tool keeps its cache in its own folder of `~/.cache` (`go-build`, `npm`, `composer`).
+
+A launch with a variant prints `Image: php (...)`, and one that is not built stops with the `make build-claude VARIANT=...` command. When the project has a file whose tool the image lacks, the launcher says so: `composer.json` without the `php` variant, `go.mod` with `node` or `php`, `package.json` with `go`. No variant has both PHP and Node: a PHP project with a JavaScript front end picks `php`, and builds its front end in the dev container.
 
 ### Dependency cache
 
@@ -226,7 +244,7 @@ When the cache runs, `claude-jailed` adds it to the jail's `/etc/hosts` and sets
 - **Lockfiles stay portable.** `package-lock.json` keeps `https://registry.npmjs.org/...` URLs (npm rewrites them to the registry it is given), and `pnpm-lock.yaml` and `yarn.lock` hold no registry address. A project installed in the jail installs the same way on the host, in a dev container or in CI.
 - **Checksums are checked as usual.** `go` checks every module against `sum.golang.org` through the cache. That database is signed, so the cache cannot change what it says; npm checks every tarball against the `integrity` of the lockfile or the registry.
 - **What it keeps.** Downloads go to the `claude-depcache` volume (up to 5 GB for Go and 5 GB for npm; what nobody asked for in 90 days is dropped). How long an answer is fresh is up to the registry (minutes for package lists, hours for module files); when the registry cannot be reached, whatever is already cached is served. `make caches-down` removes the container and keeps the volume; `podman volume rm claude-depcache` deletes the downloads.
-- **What it does not cover.** Private modules and packages (`GOPRIVATE`, a scoped registry in `.npmrc`) still go to the proxy, as do Go modules that `proxy.golang.org` does not have (`GOPROXY` ends in `direct`) and `git clone`: they need their host on the allowlist, or `make egress-dev`. There is no Composer mirror: the jail image has no PHP.
+- **What it does not cover.** Private modules and packages (`GOPRIVATE`, a scoped registry in `.npmrc`) still go to the proxy, as do Go modules that `proxy.golang.org` does not have (`GOPROXY` ends in `direct`) and `git clone`: they need their host on the allowlist, or `make egress-dev`. There is no Composer mirror yet: in the `php` variant, `composer install` needs `repo.packagist.org` and GitHub on the allowlist, so install a PHP project's dependencies in its dev container, as for Node.
 - **Its log.** `podman logs claude-cache` lists every request the jail made to it, with the package or module name.
 
 ### MCP servers
@@ -371,12 +389,12 @@ Read-only for the same reason as the devkit mount. `JAIL_PERSONAL_SKILLS_DIR=<di
 ## Updating Claude
 
 ```bash
-make update-claude     # re-download the binary and rebuild the image
+make update-claude     # re-download the binary and rebuild the jail images
 ```
 
 `make download-claude` (the one `make all` runs) does **not** re-download when the binary already exists: it is large and there is no reason to fetch it on every `make all`. The in-app auto-updater is disabled in the image (`DISABLE_AUTOUPDATER=1`): an update inside the container would be lost on exit anyway.
 
-Every download is checked against the release manifest (see [Security notes](#security-notes-read-them)), and `make build-claude` refuses to build an image from a binary that was not checked, that changed afterwards, or that was built for another architecture than the one podman runs containers on. That last case is a binary copied from another machine, such as an x86-64 `claude-bin` from a Linux PC on an Apple silicon Mac. The fix is the same for all three: `make force-download-claude` on this machine. A binary downloaded before this check existed needs it once.
+Every download is checked against the release manifest (see [Security notes](#security-notes-read-them)), and `make build-claude` refuses to build the images from a binary that was not checked, that changed afterwards, or that was built for another architecture than the one podman runs containers on. That last case is a binary copied from another machine, such as an x86-64 `claude-bin` from a Linux PC on an Apple silicon Mac. The fix is the same for all three: `make force-download-claude` on this machine. A binary downloaded before this check existed needs it once.
 
 ## Updating the base images
 
@@ -441,8 +459,8 @@ Three levels, from cheap to thorough. CI runs all of them on every push (`.githu
 | Level | Command | Needs | What it covers |
 |---|---|---|---|
 | 1. Static | `make test-static` | podman (or `ENGINE=docker`), python3 | shellcheck, hadolint, and repo policies: base images fully qualified and pinned by digest, every `devcontainer.json` parses and keeps its hardening flags and installs nothing automatically, every `make` target the README lists exists, the devkit skills follow `devkit/README.md` |
-| 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers (with and without the dependency cache), `setup-egress.sh`, `setup-caches.sh`, the personal skills mount, project profiles (parsing, mistakes, what wins over what), per-project allowlists (the checks, the proxy created on its own network, shared, restarted or refused, the cache joining that network, `make egress-prune` removing the network), MCP servers (the profile key, what `claude-jailed` adds, `mcp-servers.sh` building, starting, checking and removing them), secrets (`make secrets`, the line in `devcontainer.json`, a server's file in `mcp-up`, the jail never getting them, `doctor`), the Makefile targets (`devcontainer`, `ai-sessions`, `profile`, `secrets`, `personal-skills`, `aliases`, `verify`, `fix-volumes`, `caches`, `caches-down`, `egress-prune`, `mcp-up`, `mcp-down`, `mcp-list`), `dev.sh`, `doctor.sh`, `bump-images.sh` (with a fake registry) and `egress-log.sh` (with a real tinyproxy log) |
-| 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits (also from a project profile), read-only host-executed paths (also a symlink left at one, and paths a profile adds) and personal skills, Node and npm inside the jail, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak, and `egress-log.sh` on its real log), a project's own allowlist and proxy (its domain passes for it and not for another project, a jail cannot reach another project's proxy, `@dev`, `make egress-prune` keeping the proxy a running jail uses), with the dependency cache on that proxy's network, the dependency cache with the strict allowlist (`go get` with its checksums, npm, pnpm and yarn through corepack, lockfiles that keep `registry.npmjs.org`, GET and HEAD only, a stopped cache), MCP servers (hardened, reached only by the projects that list them, never their proxy, out only through their own allowlist, `make mcp-down`; the shipped `context7` answering MCP from inside the jail, a server's secrets in that server only), each dev container run with its own `devcontainer.json`, and a project's secrets in its dev container and nowhere in the jail |
+| 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers (with and without the dependency cache), `setup-egress.sh`, `setup-caches.sh`, the personal skills mount, project profiles (parsing, mistakes, what wins over what), per-project allowlists (the checks, the proxy created on its own network, shared, restarted or refused, the cache joining that network, `make egress-prune` removing the network), MCP servers (the profile key, what `claude-jailed` adds, `mcp-servers.sh` building, starting, checking and removing them), secrets (`make secrets`, the line in `devcontainer.json`, a server's file in `mcp-up`, the jail never getting them, `doctor`), image variants (picked by the profile or `JAIL_VARIANT`, their names, refused when unknown or not built, the note for a missing tool, `make build-claude` and `VARIANT`), the Makefile targets (`devcontainer`, `ai-sessions`, `profile`, `secrets`, `personal-skills`, `aliases`, `verify`, `fix-volumes`, `caches`, `caches-down`, `egress-prune`, `mcp-up`, `mcp-down`, `mcp-list`), `dev.sh`, `doctor.sh`, `bump-images.sh` (with a fake registry) and `egress-log.sh` (with a real tinyproxy log) |
+| 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits (also from a project profile), the go, node and php image variants (their toolchains, Composer and PHP on a project offline), read-only host-executed paths (also a symlink left at one, and paths a profile adds) and personal skills, Node and npm inside the jail, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak, and `egress-log.sh` on its real log), a project's own allowlist and proxy (its domain passes for it and not for another project, a jail cannot reach another project's proxy, `@dev`, `make egress-prune` keeping the proxy a running jail uses), with the dependency cache on that proxy's network, the dependency cache with the strict allowlist (`go get` with its checksums, npm, pnpm and yarn through corepack, lockfiles that keep `registry.npmjs.org`, GET and HEAD only, a stopped cache), MCP servers (hardened, reached only by the projects that list them, never their proxy, out only through their own allowlist, `make mcp-down`; the shipped `context7` answering MCP from inside the jail, a server's secrets in that server only), each dev container run with its own `devcontainer.json`, and a project's secrets in its dev container and nowhere in the jail |
 
 `make test` runs levels 1 and 2 and works anywhere with podman, macOS included (`ENGINE=docker` also works for these two levels). `make test-unit BATS=bats` uses a local bats instead of the container; on a Mac, `env PATH=/usr/bin:/bin:/usr/sbin:/sbin "$(command -v bats)" tests/unit` runs them with the stock macOS tools, as CI does.
 

@@ -137,6 +137,16 @@ else
 fi
 if podman image exists "$JAIL_IMAGE" 2>/dev/null; then ok "image $JAIL_IMAGE"
 else fail "image $JAIL_IMAGE is missing" "make build-claude"; fi
+# The other variants are only needed by projects whose profile picks them
+# ('image = php'): not built is fine, and the launcher says so when it is not.
+variant_base="$JAIL_IMAGE" variant_tag=""
+case "${variant_base##*/}" in *:*) variant_tag=":${variant_base##*:}" variant_base="${variant_base%:*}" ;; esac
+built="" missing=""
+for v in go node php; do
+  if podman image exists "$variant_base-$v$variant_tag" 2>/dev/null; then built="$built $v"; else missing="$missing $v"; fi
+done
+if [ -z "$missing" ]; then ok "image variants built: go node php"
+else ok "image variants built:${built:- none}; not built:$missing (make build-claude VARIANT=<name> when a project uses one)"; fi
 
 section "Claude volumes"
 # The check runs a short container from the jail image, like the launchers do.

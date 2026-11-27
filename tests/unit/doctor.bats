@@ -226,3 +226,15 @@ $REPO"
   [ "$status" -eq 1 ]
   contains "$output" "FAIL  $JAIL_SECRETS_DIR is inside DEV_PROJECTS, where the Claude jail can read it"
 }
+
+@test "doctor: the go, node and php variants are listed, built or not, and never a problem" {
+  install_aliases
+  doctor
+  contains "$output" "ok    image variants built: go node php"
+
+  export STUB_IMAGES_MISSING="localhost/claude-jail-node:latest localhost/claude-jail-php:latest"
+  doctor
+  [ "$status" -eq 0 ]
+  contains "$output" "ok    image variants built: go; not built: node php (make build-claude VARIANT=<name> when a project uses one)"
+  contains "$output" "0 problem(s), 0 warning(s)."
+}

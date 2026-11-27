@@ -60,8 +60,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: tests/ci/setup-rootless-podman.sh
-      # caches.bats and mcp.bats are part of egress: the job keeps its name, which a ruleset may require.
-      - run: make test-integration TESTS="tests/integration/jail.bats tests/integration/volumes.bats tests/integration/egress.bats tests/integration/caches.bats tests/integration/mcp.bats"
+      # caches.bats, mcp.bats and images.bats are part of it too: the job keeps its name, which a ruleset may require.
+      - run: make test-integration TESTS="tests/integration/jail.bats tests/integration/volumes.bats tests/integration/images.bats tests/integration/egress.bats tests/integration/caches.bats tests/integration/mcp.bats"
 
   integration-devcontainers:
     name: integration (devcontainer ${{ matrix.type }})
