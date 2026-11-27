@@ -32,6 +32,9 @@
 #                       Claude had changed the project (e.g. 'echo x >> Makefile')
 #   STUB_RUN_EXIT       its exit status (default 0)
 #   skopeo for bump-images.sh ('podman run ... inspect --raw docker://<ref>'):
+#   The proxy's log for egress-log.sh ('podman logs ...'):
+#   STUB_PROXY_LOG      file printed as the log (nothing when unset)
+#   STUB_LOGS_ERROR     makes 'podman logs' fail with this message, exit 125
 #   STUB_MANIFESTS      directory with the raw manifest of each ref, in a file
 #                       named after the ref with '/' as '_'; no file = the
 #                       registry does not know the tag
@@ -83,6 +86,12 @@ case "$1 ${2:-}" in
     printf '%s\n' "${STUB_MACHINE_MOUNTS:-}" ;;
   "container exists")
     [ -n "${STUB_PROXY_RUNNING:-}" ] ;;
+  logs\ *)
+    if [ -n "${STUB_LOGS_ERROR:-}" ]; then
+      echo "Error: $STUB_LOGS_ERROR" >&2
+      exit 125
+    fi
+    [ -z "${STUB_PROXY_LOG:-}" ] || cat "$STUB_PROXY_LOG" ;;
   "network exists")
     grep -qxF -- "$last" "$log.removed" 2>/dev/null && exit 1
     case " ${STUB_NETWORKS:-} " in *" $last "*) exit 0 ;; esac

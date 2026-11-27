@@ -262,6 +262,8 @@ setup_egress_copy() {
   has_pair "$args" --cap-drop ALL
   has_pair "$args" --security-opt no-new-privileges
   has_pair "$args" --memory 256m
+  # Its log is the connection record ('make egress-log'): capped.
+  has_pair "$args" --log-opt max-size=10m
 }
 
 @test "setup-egress: every name follows the overrides" {

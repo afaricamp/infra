@@ -30,6 +30,7 @@ Infrastructure for running **Claude Code** and the **JetBrains IDEs** (GoLand, P
 │       ├── allowlist           # strict: Anthropic only
 │       ├── allowlist-dev       # opt-in: Go modules, GitHub, npm
 │       ├── setup-egress.sh
+│       ├── egress-log.sh       # 'make egress-log': what the proxy allowed and denied
 │       └── launch_claude_jailed.sh
 ├── devkit/                     # Claude Code plugin with the shared skills (see "Skills")
 │   ├── .claude-plugin/plugin.json
@@ -82,6 +83,7 @@ The repo can live anywhere: `make aliases` writes its path into the installed `~
 | `make build-claude` / `build-go` / `build-php` / `build-react` / `build-vue` | Build a single image |
 | `make egress` | Egress proxy with the **strict** allowlist (Anthropic only) |
 | `make egress-dev` | Same, but also allowing Go modules, GitHub and npm |
+| `make egress-log [SINCE=1h] [FOLLOW=1]` | What the proxy allowed and denied, per domain with counts; `FOLLOW=1` shows each connection as it happens (see [What the proxy let through](#what-the-proxy-let-through)) |
 | `make aliases` | Copy `dev.sh` and hook it into `~/.bashrc` |
 | `make devcontainer PROJECT=<path> TYPE=go\|php\|react\|vue` | Copy the `devcontainer.json` into the given project (`FORCE=1` to overwrite an existing one) |
 | `make ai-sessions PROJECT=<path>` | Add `.ai-sessions/` (local AI session notes, gitignored except its README) to a project. `newproj-*` does it for you; `FORCE=1` replaces the README with the current template |
@@ -138,6 +140,25 @@ When Claude exits (normally, with an error or on Ctrl-C), the launcher lists the
 The jail image ships the Go toolchain and Node 24 (npm, plus pnpm and yarn through corepack), so Claude can run the type checks, linters and tests of Go, React and Vue projects. Strict mode is fine for conversing and editing but **not for building**: without `proxy.golang.org`, `github.com` and `registry.npmjs.org` on the allowlist, `go mod download`, `git clone`, `npm install` and corepack's first download of pnpm fail. If you need to build inside the jail, start the proxy with `make egress-dev` (see the security trade-off documented in `allowlist-dev`).
 
 For Node projects, install the dependencies in the dev container (see the security note on lifecycle scripts) and let Claude use that `node_modules`: the project directory is shared, and the jail and the dev containers run the same Node major, so native modules load in both. Keep the three `node:` tags in step when you change one. npm's cache lives in `~/.cache/npm`, inside the `claude-gocache` volume, so it survives between sessions like the Go build cache.
+
+### What the proxy let through
+
+```bash
+make egress-log              # every destination in the proxy's log, grouped: denied, failed, allowed
+make egress-log SINCE=1h     # only the last hour (anything 'podman logs --since' takes)
+make egress-log FOLLOW=1     # one line per connection as it happens; Ctrl-C to stop
+```
+
+```
+Denied, not on the allowlist:
+       3  registry.npmjs.org:443                   last Nov 26 08:00:09  (make egress-dev allows it)
+       1  example.com:443                          last Nov 26 08:00:09
+
+Allowed:
+       2  api.anthropic.com:443                    last Nov 26 08:00:09
+```
+
+When a command fails under `claude-jailed`, this shows which domain it needed. To allow one, add it to `claude-jail/egress-hardening/allowlist` and run `make egress`; the marked ones are already in `allowlist-dev`. "Failed" means the domain was allowed but its name did not resolve or the host did not answer. The proxy only sees host names (HTTPS goes through it as `CONNECT`), never URLs or content, and every jailed session shares it, so the log does not say which project a connection came from. The log belongs to the proxy container: `make egress` recreates the container, which starts an empty log, and where podman keeps logs in a file (rather than journald) it is capped at 10 MB.
 
 **IDE (Tier 1, backend in a container):**
 
@@ -247,7 +268,7 @@ Every `FROM` and `COPY --from` in the Containerfiles, and the images the Makefil
 - **JetBrains does not GPG-sign its downloads**, it only publishes SHA-256. Verify the checksum of the Gateway tarball when you download it; there is no cryptographic authenticity beyond HTTPS.
 - **Claude's credentials and account state live in the `claude-home` volume** (mounted at `~/.claude`; `CLAUDE_CONFIG_DIR` points there, so `.claude.json` is kept too instead of being lost on every run). They are readable by anything running inside the jail, including project code that Claude executes. That is inherent to the design — Claude needs its token — but factor it in when judging the blast radius of a project you do not trust.
 - **`--cap-add=FOWNER`/`CHOWN` in the dev containers** relax `--cap-drop=ALL` so the Gateway worker can deploy itself. With `--userns=keep-id` those capabilities only apply inside your subuid range, so they grant no power over files outside your user.
-- **The egress allowlist filters by hostname, not by IP.** It is a reasonable exfiltration control, not a guarantee: it does not inspect the contents of the TLS tunnel (it is `CONNECT`, not MITM), so any permitted domain remains a possible channel out. It also cannot see DNS, so `jail-internal` is created with DNS turned off (`--disable-dns`): older aardvark-dns versions forward queries from internal networks, which would be a second (slow, but real) channel out. The jail finds the proxy through an `/etc/hosts` entry the launcher adds. `make egress` recreates a `jail-internal` left with DNS on by an older setup, and `make verify` still checks that outside names do not resolve.
+- **The egress allowlist filters by hostname, not by IP.** It is a reasonable exfiltration control, not a guarantee: it does not inspect the contents of the TLS tunnel (it is `CONNECT`, not MITM), so any permitted domain remains a possible channel out. It also cannot see DNS, so `jail-internal` is created with DNS turned off (`--disable-dns`): older aardvark-dns versions forward queries from internal networks, which would be a second (slow, but real) channel out. The jail finds the proxy through an `/etc/hosts` entry the launcher adds. `make egress` recreates a `jail-internal` left with DNS on by an older setup, and `make verify` still checks that outside names do not resolve. `make egress-log` lists what the proxy allowed and refused.
 - **The normal-network mode (`claude-jail`) can reach your LAN** and, depending on the podman network backend, services on the host. Use `claude-jailed` for anything you do not trust.
 
 ## Compared with Claude Code's own isolation
@@ -282,8 +303,8 @@ Three levels, from cheap to thorough. CI runs all of them on every push (`.githu
 | Level | Command | Needs | What it covers |
 |---|---|---|---|
 | 1. Static | `make test-static` | podman (or `ENGINE=docker`), python3 | shellcheck, hadolint, and repo policies: base images fully qualified and pinned by digest, every `devcontainer.json` parses and keeps its hardening flags and installs nothing automatically, every `make` target the README lists exists, the devkit skills follow `devkit/README.md` |
-| 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers, `setup-egress.sh`, the personal skills mount, the Makefile targets (`devcontainer`, `ai-sessions`, `personal-skills`, `aliases`, `verify`, `fix-volumes`), `dev.sh`, `doctor.sh` and `bump-images.sh` (with a fake registry) |
-| 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits, read-only host-executed paths and personal skills, Node and npm inside the jail, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak) and each dev container run with its own `devcontainer.json` |
+| 2. Unit | `make test-unit` | podman (or `ENGINE=docker`) | The shell logic, with a fake `podman` that records what it is asked to run: the launch guards, read-only mounts, flags, volume check, both launchers, `setup-egress.sh`, the personal skills mount, the Makefile targets (`devcontainer`, `ai-sessions`, `personal-skills`, `aliases`, `verify`, `fix-volumes`), `dev.sh`, `doctor.sh`, `bump-images.sh` (with a fake registry) and `egress-log.sh` (with a real tinyproxy log) |
+| 3. Integration | `make test-integration` | rootless podman (Linux, or a podman machine on macOS), `bats`, internet | The real thing: UID mapping, no capabilities, enforced limits, read-only host-executed paths and personal skills, Node and npm inside the jail, two jails at once, volume persistence, the login bug reproduced and repaired by `make fix-volumes`, two jails, and a dev container plus the jail, writing to the same project at the same time, the egress proxy (allowed, filtered, port 443 only, no direct route, no DNS leak, and `egress-log.sh` on its real log) and each dev container run with its own `devcontainer.json` |
 
 `make test` runs levels 1 and 2 and works anywhere with podman, macOS included (`ENGINE=docker` also works for these two levels). `make test-unit BATS=bats` uses a local bats instead of the container; on a Mac, `env PATH=/usr/bin:/bin:/usr/sbin:/sbin "$(command -v bats)" tests/unit` runs them with the stock macOS tools, as CI does.
 
