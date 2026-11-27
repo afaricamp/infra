@@ -40,6 +40,18 @@
 #   STUB_MANIFESTS      directory with the raw manifest of each ref, in a file
 #                       named after the ref with '/' as '_'; no file = the
 #                       registry does not know the tag
+#   Per-project proxies (any name ending in -<12 hex>, see jail_project_proxy):
+#   STUB_PROJECT_PROXIES  space-separated ones that already exist; also what
+#                         'ps -a --filter label=dev-infra.proxy-group=...' lists
+#   STUB_PROJECT_STOPPED  set: those are stopped
+#   STUB_PROJECT_NEVER_STARTED  set: and in the 'created' state, never started
+#   STUB_PROJECT_PROXY_IP their address on the internal network (10.89.0.4)
+#   STUB_PROXIES_IN_USE   the ones a running jail uses ('ps -q --filter
+#                         label=dev-infra.proxy=<name>' answers for them)
+#   STUB_CREATE_FAIL      set: 'create' fails
+#   'create' adds the name to STUB_LOG.created and its arguments to
+#   STUB_LOG.create; 'start' adds to STUB_LOG.started; 'cp' copies its source
+#   to STUB_LOG.cp and its mode to STUB_LOG.cp.mode.
 log="${STUB_LOG:-/dev/null}"
 printf '%s\n' "$*" >> "$log"
 last="${*: -1}"
@@ -49,6 +61,18 @@ volume_exists() {
   return 1
 }
 
+project_proxy() { [[ $1 =~ -[0-9a-f]{12}$ ]]; }
+listed() { grep -qxF -- "$1" "$log.$2" 2>/dev/null; }
+pp_exists() {
+  case " ${STUB_PROJECT_PROXIES:-} " in *" $1 "*) return 0 ;; esac
+  listed "$1" created
+}
+pp_running() {
+  listed "$1" started && return 0
+  case " ${STUB_PROJECT_PROXIES:-} " in *" $1 "*) [ -z "${STUB_PROJECT_STOPPED:-}" ] ;; *) return 1 ;; esac
+}
+record() { [ "$log" = /dev/null ] || printf '%s\n' "$2" >> "$log.$1"; }
+
 case "$1 ${2:-}" in
   "volume inspect")
     volume_exists "$last" || exit 125
@@ -56,6 +80,18 @@ case "$1 ${2:-}" in
   "volume exists")
     volume_exists "$last" ;;
   "container inspect")
+    if project_proxy "$last"; then
+      pp_exists "$last" || exit 125
+      case "$*" in
+        *IPAddress*) echo "${STUB_PROJECT_PROXY_IP-10.89.0.4}" ;;
+        *State.Status*)
+          if pp_running "$last"; then echo running
+          elif listed "$last" created || [ -n "${STUB_PROJECT_NEVER_STARTED:-}" ]; then echo created
+          else echo exited; fi ;;
+        *) if pp_running "$last"; then echo true; else echo false; fi ;;
+      esac
+      exit 0
+    fi
     if [ "$last" = "${JAIL_CACHE:-claude-cache}" ]; then
       [ -n "${STUB_CACHE_RUNNING:-}" ] || exit 125
       case "$*" in
@@ -95,6 +131,7 @@ case "$1 ${2:-}" in
   "machine ssh")
     printf '%s\n' "${STUB_MACHINE_MOUNTS:-}" ;;
   "container exists")
+    if project_proxy "$last"; then pp_exists "$last"; exit; fi
     if [ "$last" = "${JAIL_CACHE:-claude-cache}" ]; then [ -n "${STUB_CACHE_RUNNING:-}" ]; exit; fi
     [ -n "${STUB_PROXY_RUNNING:-}" ] ;;
   logs\ *)
@@ -114,6 +151,35 @@ case "$1 ${2:-}" in
     [ "$log" = /dev/null ] || printf '%s\n' "$last" >> "$log.removed" ;;
   "network create"|"network connect"|build\ *|"rm -f")
     ;;
+  create\ *)
+    [ -z "${STUB_CREATE_FAIL:-}" ] || { echo "Error: creating container storage: the stub says no" >&2; exit 125; }
+    prev=""
+    for arg in "$@"; do
+      [ "$prev" = --name ] && record created "$arg"
+      prev="$arg"
+    done
+    [ "$log" = /dev/null ] || printf '%s\n' "$@" > "$log.create"
+    echo 0123456789abcdef ;;
+  cp\ *)
+    if [ "$log" != /dev/null ]; then
+      cat "$2" > "$log.cp"
+      # Only the mode is read, never the name.
+      # shellcheck disable=SC2012
+      ls -l "$2" | cut -c1-10 > "$log.cp.mode"
+    fi ;;
+  start\ *)
+    shift
+    for name in "$@"; do record started "$name"; done ;;
+  ps\ *)
+    case "$*" in
+      *"label=dev-infra.proxy-group="*)
+        for name in ${STUB_PROJECT_PROXIES:-}; do echo "$name"; done ;;
+      *"label=dev-infra.proxy="*)
+        all="$*"
+        name="${all##*label=dev-infra.proxy=}"
+        name="${name%% *}"
+        case " ${STUB_PROXIES_IN_USE:-} " in *" $name "*) echo 1a2b3c4d5e6f ;; esac ;;
+    esac ;;
   run\ *)
     shift
     case " $* " in

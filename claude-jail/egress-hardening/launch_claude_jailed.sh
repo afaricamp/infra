@@ -23,6 +23,11 @@ jail_settings
 jail_check_volumes
 jail_project_flags
 
+# A project with its own allowlist (in its profile, or JAIL_ALLOWLIST) goes
+# through its own proxy, created or started here when needed (see
+# "Per-project allowlist" in common.sh). JAIL_PROXY then names that one.
+[ -z "$JAIL_ALLOWLIST_FILTER" ] || jail_project_proxy
+
 # Make sure the proxy is actually RUNNING, not just present: the container
 # survives a reboot in the stopped state, and then Claude would start and fail
 # with an obscure network error instead of this message.
@@ -80,8 +85,10 @@ fi
 jail_watch_start
 
 # Arguments are handed to claude: 'claude-jailed --resume', 'claude-jailed -p ...'
+# The label tells 'make egress-prune' which proxy this jail is using.
 podman run --rm \
   "${JAIL_FLAGS[@]}" \
+  --label "dev-infra.proxy=$JAIL_PROXY" \
   --network "$JAIL_NET_INTERNAL" \
   --add-host "$JAIL_PROXY:$PROXY_IP" \
   -e HTTPS_PROXY="$PROXY_URL" \

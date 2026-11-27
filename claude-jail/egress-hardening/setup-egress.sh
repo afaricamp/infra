@@ -16,7 +16,9 @@
 # allowlist. Without it, jailed mode can only reach Anthropic: 'git clone'
 # fails, and so do 'go mod download' and 'npm install' unless the dependency
 # cache runs ('make caches', setup-caches.sh). See allowlist-dev for the
-# security trade-off.
+# security trade-off. A project can also have its own allowlist, in its
+# profile: claude-jailed then starts a proxy of its own from the same image
+# (see "Per-project allowlist" in common.sh).
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
@@ -61,22 +63,21 @@ podman network exists "$JAIL_NET_EGRESS" || \
 podman build -t "$JAIL_PROXY_IMAGE" -f Containerfile.proxy .
 
 # 4) Start the proxy on the egress network first, so its resolv.conf points
-#    at that network's DNS (the internal one has none). Its log is the record
-#    of every connection ('make egress-log'): capped where podman writes it to
-#    a file (journald rotates on its own and ignores the option).
+#    at that network's DNS (the internal one has none). JAIL_PROXY_RUN_FLAGS
+#    (common.sh) is the hardening, and caps its log, the record of every
+#    connection ('make egress-log').
 podman run -d --replace --name "$JAIL_PROXY" \
-  --log-opt max-size=10m \
-  --userns keep-id:uid=1000,gid=1000 \
-  --security-opt no-new-privileges \
-  --cap-drop ALL \
-  --pids-limit 256 \
-  --memory 256m \
-  --memory-swap 256m \
+  "${JAIL_PROXY_RUN_FLAGS[@]}" \
   --network "$JAIL_NET_EGRESS" \
   "$JAIL_PROXY_IMAGE"
 
 # 5) Give it its second leg: the internal network, where the jail reaches it
 podman network connect "$JAIL_NET_INTERNAL" "$JAIL_PROXY"
+
+# 6) The per-project proxies (projects with their own allowlist) run the old
+#    image: remove the ones no jail is using, and the next launch of each
+#    project starts a new one from this image.
+jail_prune_proxies
 
 echo
 echo "OK. Proxy '$JAIL_PROXY' is up."

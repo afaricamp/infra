@@ -76,6 +76,7 @@ SCRIPTS        := dev.sh doctor.sh bump-images.sh claude-jail/common.sh claude-j
                   claude-jail/fetch-claude.sh claude-jail/check-claude-bin.sh claude-jail/profile.sh \
                   claude-jail/egress-hardening/setup-egress.sh claude-jail/egress-hardening/egress-log.sh \
                   claude-jail/egress-hardening/setup-caches.sh claude-jail/egress-hardening/cache-entrypoint.sh \
+                  claude-jail/egress-hardening/prune-proxies.sh \
                   claude-jail/egress-hardening/launch_claude_jailed.sh \
                   tests/static/policy.sh tests/ci/setup-rootless-podman.sh \
                   tests/unit/stubs/podman \
@@ -95,7 +96,7 @@ CONTAINERFILES := claude-jail/Containerfile claude-jail/egress-hardening/Contain
 .PHONY: help all install check-deps podman-setup download-claude \
         force-download-claude update-claude \
         build build-claude build-go build-php build-react build-vue egress egress-dev egress-log \
-        caches caches-down \
+        caches caches-down egress-prune \
         aliases devcontainer ai-sessions profile personal-skills fix-volumes verify doctor bump-images lint clean-images \
         test test-static test-unit test-integration test-all
 
@@ -217,6 +218,11 @@ egress-log: ## What the egress proxy allowed and denied, per domain (SINCE=1h, F
 	@since=$(call shquote,SINCE); \
 	 JAIL_PROXY="$(JAIL_PROXY)" "$(CLAUDE_JAIL)/egress-hardening/egress-log.sh" \
 	   $${since:+--since "$$since"} $(if $(FOLLOW),--follow)
+
+# Projects with an allowlist in their profile get a proxy of their own
+# (claude-proxy-<hash>), which stays up for the next launch.
+egress-prune: ## Remove the per-project proxies that no running claude-jailed uses
+	@JAIL_PROXY="$(JAIL_PROXY)" "$(CLAUDE_JAIL)/egress-hardening/prune-proxies.sh"
 
 # Go modules and npm packages for claude-jailed, through a cache that sits on
 # the proxy's two networks: the strict allowlist is then enough to build. The

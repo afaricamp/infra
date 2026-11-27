@@ -378,6 +378,18 @@ setup_egress_copy() {
   has_pair "$args" --log-opt max-size=10m
 }
 
+@test "setup-egress: removes the per-project proxies no jail uses, so they come back from the new image" {
+  setup_egress_copy
+  export STUB_PROJECT_PROXIES="claude-proxy-aaaaaaaaaaaa claude-proxy-bbbbbbbbbbbb"
+  export STUB_PROXIES_IN_USE="claude-proxy-bbbbbbbbbbbb"
+  run "$EGRESS/setup-egress.sh"
+  [ "$status" -eq 0 ]
+  grep -qx 'rm -f claude-proxy-aaaaaaaaaaaa' "$STUB_LOG"
+  not grep -qx 'rm -f claude-proxy-bbbbbbbbbbbb' "$STUB_LOG"
+  # After the new proxy is up, never before.
+  [ "$(grep -nx 'network connect jail-internal claude-proxy' "$STUB_LOG" | cut -d: -f1)" -lt "$(grep -nx 'rm -f claude-proxy-aaaaaaaaaaaa' "$STUB_LOG" | cut -d: -f1)" ]
+}
+
 @test "setup-egress: every name follows the overrides" {
   setup_egress_copy
   export JAIL_PROXY=p1 JAIL_PROXY_IMAGE=img1 JAIL_NET_INTERNAL=n1 JAIL_NET_EGRESS=e1

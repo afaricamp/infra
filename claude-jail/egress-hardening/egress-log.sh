@@ -142,8 +142,9 @@ done < <(printf '%s\n' "$records" |
 
 if [ "$deny_hint" -eq 1 ]; then
   echo
-  echo "To let a denied domain through, add it to claude-jail/egress-hardening/allowlist"
-  echo "(one extended regex per line) and run 'make egress' again."
+  echo "To let a denied domain through for one project, add it to 'allowlist' in that"
+  echo "project's profile (make profile PROJECT=<path>). For every project, add it to"
+  echo "claude-jail/egress-hardening/allowlist (one extended regex per line) and run 'make egress' again."
   [ "$cache_hint" -eq 0 ] || echo "Go and npm downloads ('make caches serves it') work with the strict allowlist once the dependency cache runs."
   [ "$dev_hint" -eq 0 ] || echo "The ones marked 'make egress-dev' are in allowlist-dev: it allows them, with its trade-off."
 fi
